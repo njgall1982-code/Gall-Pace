@@ -31,7 +31,7 @@ export function App() {
       if (settings.tenSecondWarning !== undefined) audioManager.tenSecondWarningEnabled = settings.tenSecondWarning;
       if (settings.countdownBeeps !== undefined) audioManager.countdownEnabled = settings.countdownBeeps;
       if (settings.halfwayCues !== undefined) audioManager.halfwayCueEnabled = settings.halfwayCues;
-      if (settings.audioDuckingKeepAlive !== undefined) audioManager.duckingKeepAliveEnabled = settings.audioDuckingKeepAlive;
+      if (settings.silentStart !== undefined) audioManager.silentStart = settings.silentStart;
       if (settings.speechRate) audioManager.speechRate = settings.speechRate;
       if (settings.speechPitch) audioManager.speechPitch = settings.speechPitch;
       if (settings.speechVolume) audioManager.speechVolume = settings.speechVolume;

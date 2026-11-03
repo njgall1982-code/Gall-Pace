@@ -81,17 +81,22 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
       }
     }
 
-    // Play initial speech cue
+    // Play initial speech cue (unless silentStart is enabled on block 0)
     if (!isMuted) {
-      let cueText = currentInterval.cue;
-      if (!cueText) {
-        const effortText = currentInterval.effort ? ` at ${currentInterval.effort} percent effort` : '';
-        const durText = formatTimeHuman(currentInterval.duration);
-        cueText = `${currentPhaseConfig.label}! ${durText}${effortText}.`;
-      }
+      const isFirstBlock = currentIdx === 0;
+      if (isFirstBlock && audioManager.silentStart) {
+        cueStateRef.current.announcedStart = true;
+      } else {
+        let cueText = currentInterval.cue;
+        if (!cueText) {
+          const effortText = currentInterval.effort ? ` at ${currentInterval.effort} percent effort` : '';
+          const durText = formatTimeHuman(currentInterval.duration);
+          cueText = `${currentPhaseConfig.label}! ${durText}${effortText}.`;
+        }
 
-      audioManager.speak(cueText, { priority: true, delayChime: true });
-      cueStateRef.current.announcedStart = true;
+        audioManager.speak(cueText, { priority: true });
+        cueStateRef.current.announcedStart = true;
+      }
     }
   }, [currentIdx, workout]);
 
@@ -450,10 +455,10 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
           )}
         </div>
 
-        {/* Active Ducking Audio Indicator */}
-        <div className="mt-4 flex items-center gap-1.5 text-[11px] text-slate-400">
-          <Music className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
-          <span>Pandora/Amazon Music Ducking Active</span>
+        {/* Active Ducking Audio Indicator & Tip */}
+        <div className="mt-4 px-3 py-1.5 rounded-full bg-slate-900/90 border border-slate-800 text-[11px] text-slate-300 flex items-center gap-2">
+          <Music className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+          <span>Pandora Ducking Active • Resume in Control Center if needed</span>
         </div>
       </main>
 
