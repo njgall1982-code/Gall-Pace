@@ -9,10 +9,10 @@
     <meta name="description" content="Mobile-first audio run/walk interval coach designed for runners who listen to background music (Pandora, Amazon Music, Spotify)." />
     <meta name="theme-color" content="#020617" />
 
-    <!-- PWA Manifest & Icons -->
-    <link rel="manifest" href="/manifest.webmanifest" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="apple-touch-icon" href="/icon.svg" />
+    <!-- PWA Manifest & Icons (Relative paths for GitHub Pages support) -->
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="apple-touch-icon" href="./icon.svg" />
 
     <!-- Apple Web App Capabilities -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -22,12 +22,12 @@
   </head>
   <body class="bg-slate-950 text-slate-100 antialiased overflow-x-hidden selection:bg-emerald-500 selection:text-slate-950">
     <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
+    <script type="module" src="./src/main.jsx"></script>
     <script>
       // Register Service Worker for offline PWA functionality
       if ('serviceWorker' in navigator && (window.location.protocol === 'https:' || window.location.hostname === 'localhost')) {
         window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js').catch((err) => {
+          navigator.serviceWorker.register('./sw.js').catch((err) => {
             console.log('SW registration note:', err);
           });
         });
