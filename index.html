@@ -9,7 +9,12 @@
     <meta name="description" content="Mobile-first audio run/walk interval coach designed for runners who listen to background music (Pandora, Amazon Music, Spotify)." />
     <meta name="theme-color" content="#020617" />
 
-    <!-- PWA Manifest & Icons (Relative paths for GitHub Pages support) -->
+    <!-- Cache-Control -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+
+    <!-- PWA Manifest & Icons -->
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <link rel="apple-touch-icon" href="./icon.svg" />
@@ -24,10 +29,25 @@
     <div id="root"></div>
     <script type="module" src="./src/main.jsx"></script>
     <script>
-      // Register Service Worker for offline PWA functionality
+      // Register Service Worker with automatic update checking
       if ('serviceWorker' in navigator && (window.location.protocol === 'https:' || window.location.hostname === 'localhost')) {
         window.addEventListener('load', () => {
-          navigator.serviceWorker.register('./sw.js').catch((err) => {
+          navigator.serviceWorker.register('./sw.js').then((reg) => {
+            // Check for updates on every page load
+            reg.update();
+
+            reg.addEventListener('updatefound', () => {
+              const newWorker = reg.installing;
+              if (newWorker) {
+                newWorker.addEventListener('statechange', () => {
+                  if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                    // Force refresh to load new code
+                    window.location.reload();
+                  }
+                });
+              }
+            });
+          }).catch((err) => {
             console.log('SW registration note:', err);
           });
         });
