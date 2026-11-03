@@ -8,7 +8,7 @@ import { WorkoutCompleteModal } from './components/WorkoutCompleteModal';
 import { DEFAULT_WORKOUTS } from './data/defaultWorkouts';
 import { storageService } from './services/storage';
 import { audioManager, STUDIO_VOICES } from './services/audioManager';
-import { Plus, Sparkles, Filter, Download, Music2, Volume2, ShieldCheck, Play } from 'lucide-react';
+import { Plus, Download, X, HelpCircle } from 'lucide-react';
 
 export function App() {
   const [activeWorkout, setActiveWorkout] = useState(null);
@@ -19,6 +19,10 @@ export function App() {
   const [selectedFilter, setSelectedFilter] = useState('All');
   const [installPrompt, setInstallPrompt] = useState(null);
   const [isInstalled, setIsInstalled] = useState(false);
+  const [showIntroGuide, setShowIntroGuide] = useState(() => {
+    const s = storageService.getSettings();
+    return !s?.hideIntroGuide;
+  });
 
   // Load custom workouts and apply settings on mount
   useEffect(() => {
@@ -62,6 +66,12 @@ export function App() {
     };
   }, []);
 
+  const handleDismissIntroGuide = () => {
+    setShowIntroGuide(false);
+    const currentSettings = storageService.getSettings();
+    storageService.saveSettings({ ...currentSettings, hideIntroGuide: true });
+  };
+
   const handleInstallApp = async () => {
     if (!installPrompt) return;
     installPrompt.prompt();
@@ -97,11 +107,11 @@ export function App() {
       category: 'Custom',
       isCustom: true,
       intervals: [
-        { id: 'c-1', phase: 'warmup', name: 'Warm-up Walk', duration: 180, effort: null, cue: 'Starting with a 3 minute warm up walk.' },
-        { id: 'c-2', phase: 'run', name: 'Target Run', duration: 120, effort: 60, cue: 'Run at 60 percent effort for 2 minutes.' },
-        { id: 'c-3', phase: 'walk', name: 'Walk Recovery', duration: 60, effort: null, cue: 'Walk for 1 minute to recover.' },
-        { id: 'c-4', phase: 'run', name: 'Push Run', duration: 120, effort: 75, cue: 'Pick up the pace! Run at 75 percent effort.' },
-        { id: 'c-5', phase: 'cooldown', name: 'Cool Down Walk', duration: 180, effort: null, cue: 'Cool down walk for 3 minutes.' }
+        { id: 'c-1', phase: 'warmup', name: 'Warm-up Walk', duration: 180, effort: null },
+        { id: 'c-2', phase: 'run', name: 'Target Run', duration: 120, effort: 60 },
+        { id: 'c-3', phase: 'walk', name: 'Walk Recovery', duration: 60, effort: null },
+        { id: 'c-4', phase: 'run', name: 'Push Run', duration: 120, effort: 75 },
+        { id: 'c-5', phase: 'cooldown', name: 'Cool Down Walk', duration: 180, effort: null }
       ]
     };
     setEditingWorkout(blankWorkout);
@@ -136,11 +146,11 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-emerald-500 selection:text-slate-950">
-      {/* Sticky Header with Brand, Audio Test & Settings */}
+      {/* Sticky Header */}
       <Header onOpenSettings={() => setIsSettingsOpen(true)} />
 
       {/* Main Content Area */}
-      <main className="flex-1 max-w-4xl mx-auto w-full px-4 py-6 space-y-6">
+      <main className="flex-1 max-w-4xl mx-auto w-full px-4 py-5 space-y-5">
         {/* PWA Install Banner (Mobile) */}
         {installPrompt && !isInstalled && (
           <div className="bg-gradient-to-r from-emerald-600/30 to-teal-600/30 border border-emerald-500/40 rounded-2xl p-4 flex items-center justify-between gap-3 shadow-lg">
@@ -149,64 +159,65 @@ export function App() {
                 <Download className="w-5 h-5" />
               </div>
               <div>
-                <h4 className="text-sm font-bold text-white">Install IntervalCoach to Phone</h4>
-                <p className="text-xs text-slate-300">Pin to home screen for instant full-screen running.</p>
+                <h4 className="text-sm font-bold text-white">Add to Home Screen</h4>
+                <p className="text-xs text-slate-300">Pin for quick access on your runs.</p>
               </div>
             </div>
             <button
               onClick={handleInstallApp}
               className="py-2 px-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 font-black text-xs uppercase tracking-wider transition-all shadow-md shrink-0"
             >
-              Install PWA
+              Add
             </button>
           </div>
         )}
 
-        {/* Hero Step-by-Step Mini Guide */}
-        <div className="bg-slate-900/60 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-sm">
-          <div className="flex items-center justify-between gap-2 mb-3">
-            <span className="text-[11px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-              Zero-Setup Workflow
-            </span>
-            <span className="text-xs text-slate-400 font-medium flex items-center gap-1">
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-              Web Audio Ready
-            </span>
-          </div>
+        {/* Dismissible Quick-Start Guide */}
+        {showIntroGuide && (
+          <div className="relative bg-slate-900/70 border border-slate-800 rounded-2xl p-4 sm:p-5 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <HelpCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+                <h2 className="text-sm font-black text-white uppercase tracking-wide">
+                  Quick-Start Guide
+                </h2>
+              </div>
+              <button
+                onClick={handleDismissIntroGuide}
+                className="flex items-center gap-1 text-xs font-semibold text-slate-400 hover:text-white bg-slate-800/80 hover:bg-slate-800 px-2.5 py-1 rounded-lg border border-slate-700 transition-colors"
+                title="Hide this guide (can be reopened in Settings)"
+              >
+                <span>Got it</span>
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
 
-          <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight">
-            Run to your own music. Never miss an interval.
-          </h2>
-          <p className="text-xs sm:text-sm text-slate-400 mt-1.5 leading-relaxed">
-            1. Launch Pandora, Amazon Music, or Spotify in the background.<br />
-            2. Tap <strong>Start Run</strong> on any workout below. Audio coach seamlessly announces cues over top.
-          </p>
-
-          <div className="grid grid-cols-3 gap-2.5 mt-4 pt-4 border-t border-slate-800/80 text-center">
-            <div className="p-2.5 rounded-xl bg-slate-950/50 border border-slate-800/60">
-              <div className="text-[10px] font-bold uppercase text-slate-500">Step 1</div>
-              <div className="text-xs font-bold text-white mt-0.5">Start Music App</div>
-            </div>
-            <div className="p-2.5 rounded-xl bg-slate-950/50 border border-slate-800/60">
-              <div className="text-[10px] font-bold uppercase text-slate-500">Step 2</div>
-              <div className="text-xs font-bold text-emerald-400 mt-0.5">Pick Workout</div>
-            </div>
-            <div className="p-2.5 rounded-xl bg-slate-950/50 border border-slate-800/60">
-              <div className="text-[10px] font-bold uppercase text-slate-500">Step 3</div>
-              <div className="text-xs font-bold text-cyan-400 mt-0.5">Hit Start & Run</div>
+            <div className="grid grid-cols-3 gap-2 mt-3 text-center">
+              <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/70">
+                <div className="text-[10px] font-bold uppercase text-slate-500">Step 1</div>
+                <div className="text-xs font-bold text-white mt-0.5">Start Music App</div>
+              </div>
+              <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/70">
+                <div className="text-[10px] font-bold uppercase text-slate-500">Step 2</div>
+                <div className="text-xs font-bold text-emerald-400 mt-0.5">Pick Workout</div>
+              </div>
+              <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/70">
+                <div className="text-[10px] font-bold uppercase text-slate-500">Step 3</div>
+                <div className="text-xs font-bold text-cyan-400 mt-0.5">Hit Start Run</div>
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
         {/* Workout Library Header & Filters */}
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-3">
             <div>
               <h2 className="text-lg font-black text-white uppercase tracking-tight">
-                Workout Library
+                Workouts
               </h2>
               <p className="text-xs text-slate-400">
-                Tap to start immediately, or customize durations with quick sliders
+                Tap Start Run, or use Quick-Edit to adjust times
               </p>
             </div>
 
@@ -228,10 +239,11 @@ export function App() {
                 <button
                   key={filter}
                   onClick={() => setSelectedFilter(filter)}
-                  className={`text-xs font-bold px-3.5 py-1.5 rounded-full transition-all shrink-0 ${active
+                  className={`text-xs font-bold px-3.5 py-1.5 rounded-full transition-all shrink-0 ${
+                    active
                       ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
                       : 'bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-800'
-                    }`}
+                  }`}
                 >
                   {filter}
                 </button>
@@ -241,7 +253,7 @@ export function App() {
         </div>
 
         {/* High-Contrast Card Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pb-8">
           {filteredWorkouts.map((workout) => (
             <WorkoutCard
               key={workout.id}
@@ -254,11 +266,6 @@ export function App() {
           ))}
         </div>
       </main>
-
-      {/* Footer */}
-      <footer className="mt-auto py-6 px-4 border-t border-slate-900 text-center text-xs text-slate-500">
-        <p>IntervalCoach • Mobile-First PWA • External Music Agnostic Running Assistant</p>
-      </footer>
 
       {/* Modals */}
       {editingWorkout && (
@@ -275,6 +282,9 @@ export function App() {
         <SettingsModal
           isOpen={isSettingsOpen}
           onClose={() => setIsSettingsOpen(false)}
+          onSettingsChanged={(updated) => {
+            setShowIntroGuide(!updated?.hideIntroGuide);
+          }}
         />
       )}
 

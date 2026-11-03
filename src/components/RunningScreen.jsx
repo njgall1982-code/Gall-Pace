@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  Play, Pause, SkipForward, SkipBack, RotateCcw, X, Volume2, VolumeX,
-  Sun, Moon, ShieldAlert, CheckCircle2, Music, Sparkles, ChevronRight, Zap, Footprints, Wind, Flame
+  Play, Pause, SkipForward, SkipBack, X, Volume2, VolumeX,
+  Sun, ShieldAlert, CheckCircle2, Zap, Footprints, Wind, Flame, Plus
 } from 'lucide-react';
 import { PHASE_CONFIG, formatTime, formatTimeHuman } from '../data/defaultWorkouts';
 import { audioManager } from '../services/audioManager';
@@ -11,11 +11,17 @@ import { storageService } from '../services/storage';
 export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
   const [currentIdx, setCurrentIdx] = useState(0);
   const [secondsLeft, setSecondsLeft] = useState(workout.intervals[0]?.duration || 60);
+  const [currentBlockTotal, setCurrentBlockTotal] = useState(workout.intervals[0]?.duration || 60);
   const [isRunning, setIsRunning] = useState(true);
   const [isMuted, setIsMuted] = useState(false);
   const [showExitConfirm, setShowExitConfirm] = useState(false);
   const [highContrastMode, setHighContrastMode] = useState(false);
-  const [audioVerified, setAudioVerified] = useState(false);
+
+  // Keep a ref to isMuted so timer callbacks always read the freshest state
+  const isMutedRef = useRef(false);
+  useEffect(() => {
+    isMutedRef.current = isMuted;
+  }, [isMuted]);
 
   // Performance tracking for completion modal
   const statsRef = useRef({
@@ -38,9 +44,10 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
   const currentPhaseConfig = PHASE_CONFIG[currentInterval.phase] || PHASE_CONFIG.run;
 
   // Total workout remaining time calculation
-  const totalWorkoutSeconds = workout.intervals.reduce((acc, curr) => acc + curr.duration, 0);
-  const elapsedWorkoutSeconds = workout.intervals.slice(0, currentIdx).reduce((acc, curr) => acc + curr.duration, 0) + (currentInterval.duration - secondsLeft);
-  const remainingWorkoutSeconds = Math.max(0, totalWorkoutSeconds - elapsedWorkoutSeconds);
+  const futureIntervalsSeconds = workout.intervals
+    .slice(currentIdx + 1)
+    .reduce((acc, curr) => acc + curr.duration, 0);
+  const remainingWorkoutSeconds = Math.max(0, secondsLeft + futureIntervalsSeconds);
 
   // WakeLock: Request upon mount, release upon unmount
   useEffect(() => {
@@ -65,8 +72,8 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
   useEffect(() => {
     if (!currentInterval) return;
 
-    // Reset interval countdown and flags
     setSecondsLeft(currentInterval.duration);
+    setCurrentBlockTotal(currentInterval.duration);
     cueStateRef.current = {
       announcedStart: false,
       announcedHalfway: false,
@@ -82,8 +89,8 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
       }
     }
 
-    // Play initial Studio Neural clip (unless silentStart is enabled on block 0)
-    if (!isMuted) {
+    // Play initial Studio Neural clip (unless muted or silentStart on block 0)
+    if (!isMutedRef.current) {
       const isFirstBlock = currentIdx === 0;
       if (isFirstBlock && audioManager.silentStart) {
         cueStateRef.current.announcedStart = true;
@@ -109,13 +116,14 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
         }
 
         const remaining = prev - 1;
+        const muted = isMutedRef.current;
 
         // Halfway cue check (only for intervals >= 90s)
-        const halfwayPoint = Math.floor(currentInterval.duration / 2);
+        const halfwayPoint = Math.floor(currentBlockTotal / 2);
         if (
-          !isMuted &&
+          !muted &&
           audioManager.halfwayCueEnabled &&
-          currentInterval.duration >= 90 &&
+          currentBlockTotal >= 90 &&
           remaining === halfwayPoint &&
           !cueStateRef.current.announcedHalfway
         ) {
@@ -125,7 +133,7 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
 
         // 10-Second Warning Cue
         if (
-          !isMuted &&
+          !muted &&
           audioManager.tenSecondWarningEnabled &&
           remaining === 10 &&
           !cueStateRef.current.announcedTenSec &&
@@ -137,6 +145,7 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
 
         // 3, 2, 1 Countdown Beeps
         if (
+          !muted &&
           audioManager.countdownEnabled &&
           (remaining === 3 || remaining === 2 || remaining === 1) &&
           !cueStateRef.current.beepsCounted.has(remaining)
@@ -151,16 +160,19 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
         // Interval finished!
         if (remaining <= 0) {
           statsRef.current.completedIntervals += 1;
-          audioManager.playCountdownBeep(true); // Final high beep
+          if (!muted) {
+            audioManager.playCountdownBeep(true);
+          }
 
           // Check if workout is finished
           if (currentIdx >= workout.intervals.length - 1) {
-            // Completed whole workout!
             setIsRunning(false);
-            audioManager.playCompletionChime();
-            setTimeout(() => {
-              audioManager.speakComplete();
-            }, 600);
+            if (!muted) {
+              audioManager.playCompletionChime();
+              setTimeout(() => {
+                audioManager.speakComplete();
+              }, 500);
+            }
 
             storageService.logCompletedWorkout({
               title: workout.title,
@@ -176,7 +188,6 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
             });
             return 0;
           } else {
-            // Advance to next interval
             setCurrentIdx((idx) => idx + 1);
             return 0;
           }
@@ -187,15 +198,36 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [isRunning, currentIdx, currentInterval, nextInterval, workout, isMuted]);
+  }, [isRunning, currentIdx, currentInterval, nextInterval, workout, currentBlockTotal]);
 
   // Controls Handlers
   const handleTogglePlay = () => {
-    setIsRunning(!isRunning);
     audioManager.unlockAudio();
+    setIsRunning((prev) => !prev);
+  };
+
+  const handleToggleMute = () => {
+    const nextMuted = !isMuted;
+    setIsMuted(nextMuted);
+    isMutedRef.current = nextMuted;
+
+    if (nextMuted) {
+      // Immediately silence any active speech/chime
+      audioManager.stopAll();
+    } else {
+      // Re-unlock audio inside the tap gesture and announce current interval so user knows voice is back!
+      audioManager.unlockAudio();
+      audioManager.speakInterval(currentInterval);
+    }
+  };
+
+  const handleAddThirtySeconds = () => {
+    setSecondsLeft((prev) => prev + 30);
+    setCurrentBlockTotal((prev) => prev + 30);
   };
 
   const handleSkipNext = () => {
+    audioManager.unlockAudio();
     if (currentIdx < workout.intervals.length - 1) {
       setCurrentIdx(currentIdx + 1);
     } else {
@@ -204,43 +236,34 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
   };
 
   const handleSkipPrev = () => {
-    if (secondsLeft < currentInterval.duration - 3) {
+    audioManager.unlockAudio();
+    if (secondsLeft < currentBlockTotal - 3) {
       // If elapsed more than 3s, restart current interval
-      setSecondsLeft(currentInterval.duration);
+      setSecondsLeft(currentBlockTotal);
+      cueStateRef.current = {
+        announcedStart: false,
+        announcedHalfway: false,
+        announcedTenSec: false,
+        beepsCounted: new Set(),
+      };
+      if (!isMutedRef.current) {
+        audioManager.speakInterval(currentInterval);
+      }
     } else if (currentIdx > 0) {
       setCurrentIdx(currentIdx - 1);
     }
   };
 
-  const handleRestartInterval = () => {
-    setSecondsLeft(currentInterval.duration);
-    cueStateRef.current = {
-      announcedStart: false,
-      announcedHalfway: false,
-      announcedTenSec: false,
-      beepsCounted: new Set(),
-    };
-    if (!isMuted) {
-      audioManager.speakInterval(currentInterval);
-    }
-  };
-
-  const handleAudioCheck = () => {
-    setAudioVerified(true);
-    audioManager.testAudio(() => {
-      setTimeout(() => setAudioVerified(false), 3000);
-    });
-  };
-
   // Percentage of current interval completed (0 to 100)
-  const intervalProgressPct = Math.min(100, Math.max(0, ((currentInterval.duration - secondsLeft) / currentInterval.duration) * 100));
+  const intervalProgressPct = Math.min(
+    100,
+    Math.max(0, ((currentBlockTotal - secondsLeft) / currentBlockTotal) * 100)
+  );
 
-  // Determine dynamic styling based on phase
+  // Dynamic styling based on phase
   const isHighContrast = highContrastMode;
   let themeBg = 'bg-slate-950';
-  let badgeClass = currentPhaseConfig.bgClass;
   let timerTextColor = 'text-white';
-  let accentBorder = currentPhaseConfig.cardBorder;
 
   if (isHighContrast) {
     themeBg = 'bg-black text-white';
@@ -256,48 +279,47 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
   }
 
   return (
-    <div className={`min-h-screen flex flex-col justify-between select-none ${themeBg} transition-colors duration-300`}>
-      {/* Top Status Bar & Quick Glance Bar */}
-      <div className="p-4 border-b border-slate-800/80 bg-slate-950/60 backdrop-blur-md">
+    <div
+      className={`fixed inset-0 h-[100dvh] max-h-[100dvh] overflow-hidden flex flex-col justify-between select-none ${themeBg} transition-colors duration-300`}
+    >
+      {/* Top Status Bar */}
+      <div className="px-4 pt-3 pb-2.5 border-b border-slate-800/80 bg-slate-950/70 backdrop-blur-md shrink-0">
         <div className="max-w-md mx-auto flex items-center justify-between gap-2">
           {/* Workout Title & Interval Indicator */}
-          <div>
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+          <div className="min-w-0">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 truncate">
               {workout.title}
             </div>
             <div className="text-xs font-black text-white flex items-center gap-1.5 mt-0.5">
-              <span>Block {currentIdx + 1} of {workout.intervals.length}</span>
+              <span>Block {currentIdx + 1}/{workout.intervals.length}</span>
               <span className="text-slate-600">•</span>
-              <span className="text-slate-400 font-mono">{formatTime(remainingWorkoutSeconds)} left</span>
+              <span className="text-slate-400 font-mono">{formatTime(remainingWorkoutSeconds)} total left</span>
             </div>
           </div>
 
-          {/* Quick Utility Toggles: Outdoor Mode, Audio Check, Mute, Exit */}
-          <div className="flex items-center gap-1.5">
-            {/* Audio Test Pill */}
+          {/* Clear Utility Controls: Voice Mute Pill, Sunlight Mode, End Run */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            {/* Explicit Mute / Unmute Pill Button */}
             <button
-              onClick={handleAudioCheck}
-              className={`p-2 rounded-full border transition-all active:scale-95 ${
-                audioVerified
-                  ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
-                  : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'
-              }`}
-              title="Test Speech & Chime"
-            >
-              <Volume2 className="w-4 h-4" />
-            </button>
-
-            {/* Mute toggle */}
-            <button
-              onClick={() => setIsMuted(!isMuted)}
-              className={`p-2 rounded-full border transition-all active:scale-95 ${
+              onClick={handleToggleMute}
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-full border text-xs font-bold transition-all active:scale-95 ${
                 isMuted
-                  ? 'bg-rose-500/20 text-rose-400 border-rose-500/40'
-                  : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'
+                  ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                  : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
               }`}
-              title={isMuted ? 'Unmute Coach Voice' : 'Mute Coach Voice'}
+              title={isMuted ? 'Tap to Unmute Coach' : 'Tap to Mute Coach'}
             >
-              {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4 text-emerald-400" />}
+              {isMuted ? (
+                <>
+                  <VolumeX className="w-3.5 h-3.5 text-rose-400" />
+                  <span>Muted</span>
+                </>
+              ) : (
+                <>
+                  <Volume2 className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Voice On</span>
+                </>
+              )}
             </button>
 
             {/* High Contrast Outdoor Mode */}
@@ -324,8 +346,8 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
           </div>
         </div>
 
-        {/* Overall Workout Progress Track */}
-        <div className="max-w-md mx-auto mt-3">
+        {/* Overall Workout Segmented Progress Track */}
+        <div className="max-w-md mx-auto mt-2.5">
           <div className="w-full h-1.5 bg-slate-900 rounded-full overflow-hidden flex gap-0.5">
             {workout.intervals.map((int, i) => {
               const isPast = i < currentIdx;
@@ -349,24 +371,23 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
         </div>
       </div>
 
-      {/* Main Focus Area: Massive Countdown & Visual State Indicator */}
-      <main className="flex-1 flex flex-col items-center justify-center px-4 py-6 max-w-md mx-auto w-full text-center">
+      {/* Main Center Area: Fits dynamically in viewport without scrolling */}
+      <main className="flex-1 flex flex-col items-center justify-evenly px-4 py-2 max-w-md mx-auto w-full text-center min-h-0">
         {/* Dynamic Glowing Phase Badge */}
-        <div className="mb-4">
+        <div>
           <div
-            className={`inline-flex items-center gap-2 px-5 py-2 rounded-2xl border text-sm sm:text-base font-black uppercase tracking-wider shadow-lg transition-all ${currentPhaseConfig.bgClass} ${currentPhaseConfig.glowClass}`}
+            className={`inline-flex items-center gap-2 px-4 py-1.5 rounded-2xl border text-xs sm:text-sm font-black uppercase tracking-wider shadow-lg transition-all ${currentPhaseConfig.bgClass} ${currentPhaseConfig.glowClass}`}
           >
-            {currentInterval.phase === 'run' && <Zap className="w-5 h-5 fill-current animate-pulse" />}
-            {currentInterval.phase === 'sprint' && <Flame className="w-5 h-5 fill-current animate-bounce" />}
-            {currentInterval.phase === 'walk' && <Footprints className="w-5 h-5" />}
-            {currentInterval.phase === 'warmup' && <Flame className="w-5 h-5" />}
-            {currentInterval.phase === 'cooldown' && <Wind className="w-5 h-5" />}
+            {currentInterval.phase === 'run' && <Zap className="w-4 h-4 fill-current animate-pulse" />}
+            {currentInterval.phase === 'sprint' && <Flame className="w-4 h-4 fill-current animate-bounce" />}
+            {currentInterval.phase === 'walk' && <Footprints className="w-4 h-4" />}
+            {currentInterval.phase === 'warmup' && <Flame className="w-4 h-4" />}
+            {currentInterval.phase === 'cooldown' && <Wind className="w-4 h-4" />}
 
             <span>{currentInterval.name || currentPhaseConfig.label}</span>
 
-            {/* Target Effort Badge */}
             {currentInterval.effort && (
-              <span className="ml-1.5 px-2 py-0.5 rounded-lg bg-black/40 text-xs sm:text-sm font-black border border-white/20">
+              <span className="ml-1 px-2 py-0.5 rounded-lg bg-black/40 text-xs font-black border border-white/20">
                 {currentInterval.effort}% EFFORT
               </span>
             )}
@@ -374,21 +395,17 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
         </div>
 
         {/* Massive Digital Countdown Timer Display */}
-        <div className="relative my-2 w-full py-4">
+        <div className="w-full">
           <div
-            className={`font-mono font-black tracking-tighter text-7xl sm:text-8xl md:text-9xl ${timerTextColor} drop-shadow-2xl transition-colors`}
+            className={`font-mono font-black tracking-tighter text-7xl sm:text-8xl leading-none ${timerTextColor} drop-shadow-2xl transition-colors`}
           >
             {formatTime(secondsLeft)}
           </div>
-
-          <div className="text-xs font-bold uppercase tracking-widest text-slate-500 mt-1">
-            Interval Countdown
-          </div>
         </div>
 
-        {/* Current Interval Progress Bar */}
-        <div className="w-full max-w-xs mx-auto mb-6">
-          <div className="w-full h-3 bg-slate-900 rounded-full overflow-hidden p-0.5 border border-slate-800">
+        {/* Current Interval Progress Bar + Quick +30s Button */}
+        <div className="w-full max-w-xs mx-auto">
+          <div className="w-full h-2.5 bg-slate-900 rounded-full overflow-hidden p-0.5 border border-slate-800">
             <div
               className={`h-full rounded-full transition-all duration-1000 ease-linear ${
                 currentInterval.phase === 'run' ? 'bg-emerald-400' :
@@ -398,31 +415,39 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
               style={{ width: `${intervalProgressPct}%` }}
             />
           </div>
-          <div className="flex justify-between text-[11px] font-mono text-slate-500 mt-1.5">
-            <span>{formatTime(currentInterval.duration - secondsLeft)} elapsed</span>
-            <span>{formatTimeHuman(currentInterval.duration)} total</span>
+          <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 mt-1.5">
+            <span>{formatTime(currentBlockTotal - secondsLeft)} elapsed</span>
+            <button
+              onClick={handleAddThirtySeconds}
+              className="px-2 py-0.5 rounded-md bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 font-sans font-bold text-[10px] flex items-center gap-0.5 active:scale-95 transition-all"
+              title="Add 30 seconds to current block"
+            >
+              <Plus className="w-2.5 h-2.5 text-emerald-400" />
+              <span>30s</span>
+            </button>
+            <span>{formatTimeHuman(currentBlockTotal)} total</span>
           </div>
         </div>
 
         {/* Upcoming Interval Preview Banner */}
-        <div className="w-full max-w-sm bg-slate-900/80 border border-slate-800 rounded-2xl p-3.5 flex items-center justify-between gap-3 text-left">
-          <div>
+        <div className="w-full max-w-sm bg-slate-900/80 border border-slate-800 rounded-2xl p-3 flex items-center justify-between gap-3 text-left">
+          <div className="min-w-0">
             <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
               Up Next
             </div>
-            <div className="text-xs sm:text-sm font-black text-slate-200 mt-0.5 flex items-center gap-1.5">
+            <div className="text-xs sm:text-sm font-black text-slate-200 mt-0.5 flex items-center gap-1.5 truncate">
               {nextInterval ? (
                 <>
-                  <span className={`w-2 h-2 rounded-full ${
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${
                     nextInterval.phase === 'run' ? 'bg-emerald-400' :
                     nextInterval.phase === 'sprint' ? 'bg-rose-500' :
                     nextInterval.phase === 'walk' ? 'bg-cyan-400' : 'bg-amber-400'
                   }`} />
-                  <span>{nextInterval.name || nextInterval.phase.toUpperCase()}</span>
+                  <span className="truncate">{nextInterval.name || nextInterval.phase.toUpperCase()}</span>
                   <span className="text-slate-500">•</span>
-                  <span className="font-mono text-slate-400">{formatTimeHuman(nextInterval.duration)}</span>
+                  <span className="font-mono text-slate-400 shrink-0">{formatTimeHuman(nextInterval.duration)}</span>
                   {nextInterval.effort && (
-                    <span className="text-[11px] text-amber-400 font-bold">({nextInterval.effort}%)</span>
+                    <span className="text-[11px] text-amber-400 font-bold shrink-0">({nextInterval.effort}%)</span>
                   )}
                 </>
               ) : (
@@ -434,51 +459,48 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
           </div>
 
           {nextInterval && (
-            <div className="text-right">
+            <div className="text-right shrink-0">
               <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-slate-800 text-slate-400">
                 in {formatTime(secondsLeft)}
               </span>
             </div>
           )}
         </div>
-
-        {/* Active Ducking Audio Indicator & Tip */}
-        <div className="mt-4 px-3 py-1.5 rounded-full bg-slate-900/90 border border-slate-800 text-[11px] text-slate-300 flex items-center gap-2">
-          <Music className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-          <span>Pandora Ducking Active • Resume in Control Center if needed</span>
-        </div>
       </main>
 
-      {/* Bottom Sticky Control Deck */}
-      <footer className="p-4 sm:p-6 bg-slate-950/90 border-t border-slate-800/80 backdrop-blur-md">
+      {/* Bottom Control Deck — Always visible at bottom of viewport */}
+      <footer className="px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] bg-slate-950/95 border-t border-slate-800/80 backdrop-blur-md shrink-0">
         <div className="max-w-md mx-auto flex items-center justify-between gap-3">
           {/* Skip Previous / Restart */}
           <button
             onClick={handleSkipPrev}
-            className="w-14 h-14 rounded-2xl bg-slate-900 hover:bg-slate-800 active:bg-slate-700 text-slate-300 border border-slate-800 flex items-center justify-center active:scale-95 transition-all shadow-md"
+            className="w-16 h-14 rounded-2xl bg-slate-900 hover:bg-slate-800 active:bg-slate-700 text-slate-300 border border-slate-800 flex flex-col items-center justify-center gap-0.5 active:scale-95 transition-all shadow-md"
             aria-label="Previous Interval or Restart"
           >
-            <SkipBack className="w-6 h-6" />
+            <SkipBack className="w-5 h-5" />
+            <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">
+              {secondsLeft < currentBlockTotal - 3 ? 'Restart' : 'Prev'}
+            </span>
           </button>
 
           {/* Central Oversized Play / Pause Button */}
           <button
             onClick={handleTogglePlay}
-            className={`flex-1 h-18 rounded-3xl font-black text-slate-950 flex items-center justify-center gap-3 transition-all active:scale-95 shadow-xl ${
+            className={`flex-1 h-14 rounded-2xl font-black text-slate-950 flex items-center justify-center gap-2.5 transition-all active:scale-95 shadow-xl ${
               isRunning
-                ? 'bg-amber-400 hover:bg-amber-300 shadow-amber-400/25'
+                ? 'bg-amber-400 hover:bg-amber-300 shadow-amber-400/20'
                 : 'bg-emerald-400 hover:bg-emerald-300 shadow-emerald-400/30 ring-4 ring-emerald-500/20'
             }`}
             aria-label={isRunning ? 'Pause Workout' : 'Resume Workout'}
           >
             {isRunning ? (
               <>
-                <Pause className="w-7 h-7 fill-current" />
+                <Pause className="w-6 h-6 fill-current" />
                 <span className="text-base uppercase tracking-wider font-black">Pause</span>
               </>
             ) : (
               <>
-                <Play className="w-7 h-7 fill-current ml-1" />
+                <Play className="w-6 h-6 fill-current ml-0.5" />
                 <span className="text-base uppercase tracking-wider font-black">Resume</span>
               </>
             )}
@@ -487,10 +509,11 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
           {/* Skip Next */}
           <button
             onClick={handleSkipNext}
-            className="w-14 h-14 rounded-2xl bg-slate-900 hover:bg-slate-800 active:bg-slate-700 text-slate-300 border border-slate-800 flex items-center justify-center active:scale-95 transition-all shadow-md"
+            className="w-16 h-14 rounded-2xl bg-slate-900 hover:bg-slate-800 active:bg-slate-700 text-slate-300 border border-slate-800 flex flex-col items-center justify-center gap-0.5 active:scale-95 transition-all shadow-md"
             aria-label="Skip to Next Interval"
           >
-            <SkipForward className="w-6 h-6" />
+            <SkipForward className="w-5 h-5" />
+            <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Next</span>
           </button>
         </div>
       </footer>
@@ -533,4 +556,3 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
   );
 }
 export default RunningScreen;
-

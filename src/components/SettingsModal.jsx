@@ -269,6 +269,22 @@ export function SettingsModal({ isOpen, onClose, onSettingsChanged }) {
                 className="w-5 h-5 accent-emerald-500 cursor-pointer"
               />
             </label>
+
+            {/* Show Quick-Start Guide on Home Screen */}
+            <label className="flex items-center justify-between p-3 rounded-xl bg-slate-950/70 border border-slate-800/80 cursor-pointer hover:bg-slate-950 transition-colors">
+              <div className="space-y-0.5 pr-2">
+                <span className="text-xs font-bold text-slate-200 block">Show Quick-Start Guide on Home Screen</span>
+                <span className="text-[11px] text-slate-400 block">
+                  1. Start Pandora/Spotify in background → 2. Pick a workout → 3. Hit Start Run.
+                </span>
+              </div>
+              <input
+                type="checkbox"
+                checked={!settings.hideIntroGuide}
+                onChange={(e) => handleChange('hideIntroGuide', !e.target.checked)}
+                className="w-5 h-5 accent-emerald-500 cursor-pointer"
+              />
+            </label>
           </div>
         </div>
 
