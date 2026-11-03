@@ -1,31 +1,29 @@
 /**
  * AudioManager for IntervalCoach
  * 
- * Provides:
- * 1. Web Audio API synthesizer for harmonic chimes and countdown beeps (100% offline, zero latency).
- * 2. SpeechSynthesis API wrapper with mobile Safari/Chrome unlock and voice caching.
- * 3. Mobile Audio Focus / Ducking / Keep-Alive: Generates a silent/sub-audible audio session
- *    via WebAudio/HTML5 Audio to keep the audio session open alongside background music apps
- *    (Pandora, Spotify, Amazon Music) and prevent mobile OS timer throttling.
+ * Optimized for seamless background music compatibility (Pandora, Spotify, Amazon Music):
+ * - Does NOT keep continuous audio oscillators running, preventing iOS/Android from pausing music.
+ * - Prioritizes native SpeechSynthesis with automatic ducking provided by the OS.
+ * - Intelligent voice selection prioritizing Natural, Siri, Enhanced, and Neural human voices.
+ * - Human-like pacing, prosody punctuation, and conversational athletic coaching cues.
  */
 
 class AudioManager {
   constructor() {
-    this.audioCtx = null;
     this.synth = typeof window !== 'undefined' ? window.speechSynthesis : null;
     this.voices = [];
     this.selectedVoiceURI = null;
-    this.speechRate = 1.05; // Slightly brisk for athletic coaching
+    this.speechRate = 0.98; // Natural conversational human pace
     this.speechPitch = 1.0;
     this.speechVolume = 1.0;
-    this.chimeEnabled = true;
+    
+    // Cues settings
+    this.chimeEnabled = false; // Default to pure speech so external music apps (Pandora) are 100% uninterrupted
     this.tenSecondWarningEnabled = true;
     this.countdownEnabled = true;
     this.halfwayCueEnabled = true;
-    this.duckingKeepAliveEnabled = true;
 
-    // Mobile keep-alive audio oscillator or buffer
-    this.silentSource = null;
+    this.audioCtx = null;
     this.isUnlocked = false;
 
     this.initVoices();
@@ -35,16 +33,17 @@ class AudioManager {
     if (!this.synth) return;
 
     const loadVoices = () => {
-      this.voices = this.synth.getVoices();
-      // Prefer high-quality English voice if not already selected
+      const allVoices = this.synth.getVoices() || [];
+      if (allVoices.length === 0) return;
+
+      // Filter and sort English voices by quality
+      this.voices = this.sortVoicesByQuality(allVoices);
+
+      // Auto-pick best natural voice if none selected or if current is default robotic
       if (!this.selectedVoiceURI && this.voices.length > 0) {
-        // Look for natural English voices like Samantha, Daniel, Google US English, or default
-        const preferred = this.voices.find(v => 
-          (v.lang.startsWith('en') && (v.name.includes('Natural') || v.name.includes('Siri') || v.name.includes('Google') || v.name.includes('Samantha') || v.name.includes('Daniel')))
-        ) || this.voices.find(v => v.lang.startsWith('en')) || this.voices[0];
-        
-        if (preferred) {
-          this.selectedVoiceURI = preferred.voiceURI;
+        const bestVoice = this.findBestVoice(this.voices);
+        if (bestVoice) {
+          this.selectedVoiceURI = bestVoice.voiceURI;
         }
       }
     };
@@ -55,48 +54,87 @@ class AudioManager {
     }
   }
 
-  // Ensure AudioContext is resumed upon user touch/click
-  getAudioContext() {
-    if (!this.audioCtx) {
-      const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
-      if (AudioCtxClass) {
-        this.audioCtx = new AudioCtxClass();
-      }
-    }
-    if (this.audioCtx && this.audioCtx.state === 'suspended') {
-      this.audioCtx.resume();
-    }
-    return this.audioCtx;
+  /**
+   * Sort voices giving top priority to Natural, Enhanced, Siri, and Neural voices
+   */
+  sortVoicesByQuality(voiceList) {
+    const isQuality = (v) => {
+      const name = (v.name || '').toLowerCase();
+      return (
+        name.includes('natural') ||
+        name.includes('enhanced') ||
+        name.includes('premium') ||
+        name.includes('siri') ||
+        name.includes('neural') ||
+        name.includes('online') ||
+        name.includes('google')
+      );
+    };
+
+    const isEnglish = (v) => (v.lang || '').toLowerCase().startsWith('en');
+
+    return [...voiceList].sort((a, b) => {
+      const aEng = isEnglish(a);
+      const bEng = isEnglish(b);
+      if (aEng && !bEng) return -1;
+      if (!aEng && bEng) return 1;
+
+      const aQual = isQuality(a);
+      const bQual = isQuality(b);
+      if (aQual && !bQual) return -1;
+      if (!aQual && bQual) return 1;
+
+      return a.name.localeCompare(b.name);
+    });
   }
 
-  // Must be called from a user gesture (Start button or Audio Test button)
+  /**
+   * Finds the highest quality, most natural sounding English voice
+   */
+  findBestVoice(voiceList) {
+    const english = voiceList.filter(v => (v.lang || '').toLowerCase().startsWith('en'));
+    if (english.length === 0) return voiceList[0];
+
+    // Priority 1: Apple Siri or Enhanced voices (iOS/macOS)
+    const siriOrEnhanced = english.find(v => {
+      const n = v.name.toLowerCase();
+      return (n.includes('siri') || n.includes('enhanced') || n.includes('premium')) && !n.includes('compact');
+    });
+    if (siriOrEnhanced) return siriOrEnhanced;
+
+    // Priority 2: Google Neural / Natural voices (Chrome / Android)
+    const googleNatural = english.find(v => {
+      const n = v.name.toLowerCase();
+      return (n.includes('natural') || n.includes('google')) && (v.lang === 'en-US' || v.lang === 'en-GB');
+    });
+    if (googleNatural) return googleNatural;
+
+    // Priority 3: Well-known natural sounding character voices
+    const naturalNames = ['daniel', 'samantha', 'karen', 'oliver', 'serena', 'ava', 'guy', 'jenny', 'aria'];
+    const matched = english.find(v => {
+      const n = v.name.toLowerCase();
+      return naturalNames.some(name => n.includes(name)) && !n.includes('compact');
+    });
+    if (matched) return matched;
+
+    // Fallback to first English
+    return english[0];
+  }
+
+  /**
+   * Must be triggered from a user tap/click to grant audio permissions.
+   * Does NOT start any background oscillator, keeping Pandora/Amazon Music playing.
+   */
   unlockAudio() {
+    if (this.isUnlocked) return true;
+
     try {
-      const ctx = this.getAudioContext();
-      if (ctx && ctx.state === 'suspended') {
-        ctx.resume();
-      }
-
-      // Play a short silent buffer to unlock mobile audio output
-      if (ctx) {
-        const buffer = ctx.createBuffer(1, 1, 22050);
-        const source = ctx.createBufferSource();
-        source.buffer = buffer;
-        source.connect(ctx.destination);
-        source.start(0);
-      }
-
-      // Unlock speech synthesis on iOS/Android
       if (this.synth) {
-        const unlockUtterance = new SpeechSynthesisUtterance(' ');
-        unlockUtterance.volume = 0.01;
-        this.synth.speak(unlockUtterance);
+        // Unlock speech synthesis with a silent space
+        const utterance = new SpeechSynthesisUtterance(' ');
+        utterance.volume = 0.01;
+        this.synth.speak(utterance);
       }
-
-      if (this.duckingKeepAliveEnabled) {
-        this.startKeepAlive();
-      }
-
       this.isUnlocked = true;
       return true;
     } catch (e) {
@@ -106,176 +144,116 @@ class AudioManager {
   }
 
   /**
-   * Start a sub-audible continuous WebAudio tone (or tiny periodic tick)
-   * to keep the mobile browser audio session active in background
-   * alongside Pandora / Amazon Music.
-   */
-  startKeepAlive() {
-    try {
-      const ctx = this.getAudioContext();
-      if (!ctx || this.silentSource) return;
-
-      // Create an oscillator at inaudible gain (0.0001) that keeps the audio pipeline open
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(440, ctx.currentTime);
-      gain.gain.setValueAtTime(0.00001, ctx.currentTime); // virtually silent
-      
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start();
-      this.silentSource = osc;
-    } catch (err) {
-      console.warn('Keep-alive could not start:', err);
-    }
-  }
-
-  stopKeepAlive() {
-    if (this.silentSource) {
-      try {
-        this.silentSource.stop();
-        this.silentSource.disconnect();
-      } catch (e) {}
-      this.silentSource = null;
-    }
-  }
-
-  /**
-   * Synthesize a gentle pre-cue chime (harmonious D5 to A5 dual bell)
-   * Cuts through background music smoothly without jarring the runner.
+   * Transient Web Audio chime (only created on-demand, immediately released)
    */
   playPreCueChime() {
     if (!this.chimeEnabled) return;
     try {
-      const ctx = this.getAudioContext();
-      if (!ctx) return;
+      const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtxClass) return;
 
+      const ctx = new AudioCtxClass();
       const now = ctx.currentTime;
+
       // Note 1: 587.33 Hz (D5)
       const osc1 = ctx.createOscillator();
       const gain1 = ctx.createGain();
       osc1.type = 'sine';
       osc1.frequency.setValueAtTime(587.33, now);
-      gain1.gain.setValueAtTime(0, now);
-      gain1.gain.linearRampToValueAtTime(0.25, now + 0.02);
-      gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
-
+      gain1.gain.setValueAtTime(0.18, now);
+      gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
       osc1.connect(gain1);
       gain1.connect(ctx.destination);
       osc1.start(now);
-      osc1.stop(now + 0.36);
+      osc1.stop(now + 0.31);
 
       // Note 2: 880 Hz (A5)
       const osc2 = ctx.createOscillator();
       const gain2 = ctx.createGain();
       osc2.type = 'sine';
-      osc2.frequency.setValueAtTime(880, now + 0.12);
-      gain2.gain.setValueAtTime(0, now + 0.12);
-      gain2.gain.linearRampToValueAtTime(0.28, now + 0.14);
-      gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.55);
-
+      osc2.frequency.setValueAtTime(880, now + 0.1);
+      gain2.gain.setValueAtTime(0.2, now + 0.1);
+      gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
       osc2.connect(gain2);
       gain2.connect(ctx.destination);
-      osc2.start(now + 0.12);
-      osc2.stop(now + 0.56);
+      osc2.start(now + 0.1);
+      osc2.stop(now + 0.46);
+
+      // Close context after chime finishes so audio hardware is freed for Pandora
+      setTimeout(() => {
+        try { ctx.close(); } catch (e) {}
+      }, 600);
     } catch (e) {
-      console.warn('Pre-cue chime failed', e);
+      console.warn('Chime failed', e);
     }
   }
 
   /**
-   * Short countdown beep (e.g. for 3, 2, 1)
+   * Short countdown tone
    */
   playCountdownBeep(isFinal = false) {
-    if (!this.countdownEnabled) return;
+    if (!this.countdownEnabled || !this.chimeEnabled) return;
     try {
-      const ctx = this.getAudioContext();
-      if (!ctx) return;
+      const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtxClass) return;
 
+      const ctx = new AudioCtxClass();
       const now = ctx.currentTime;
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
 
       osc.type = isFinal ? 'triangle' : 'sine';
       osc.frequency.setValueAtTime(isFinal ? 1200 : 880, now);
-
-      gain.gain.setValueAtTime(0, now);
-      gain.gain.linearRampToValueAtTime(isFinal ? 0.35 : 0.25, now + 0.01);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + (isFinal ? 0.3 : 0.15));
+      gain.gain.setValueAtTime(isFinal ? 0.25 : 0.18, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + (isFinal ? 0.25 : 0.12));
 
       osc.connect(gain);
       gain.connect(ctx.destination);
       osc.start(now);
-      osc.stop(now + (isFinal ? 0.31 : 0.16));
+      osc.stop(now + (isFinal ? 0.26 : 0.13));
+
+      setTimeout(() => {
+        try { ctx.close(); } catch (e) {}
+      }, 400);
     } catch (e) {
       console.warn('Countdown beep failed', e);
     }
   }
 
   /**
-   * Triumphant finish chime for workout completion
-   */
-  playCompletionChime() {
-    try {
-      const ctx = this.getAudioContext();
-      if (!ctx) return;
-
-      const notes = [523.25, 659.25, 783.99, 1046.5]; // C5, E5, G5, C6
-      const now = ctx.currentTime;
-
-      notes.forEach((freq, index) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        const noteStart = now + index * 0.12;
-
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(freq, noteStart);
-        gain.gain.setValueAtTime(0, noteStart);
-        gain.gain.linearRampToValueAtTime(0.3, noteStart + 0.02);
-        gain.gain.exponentialRampToValueAtTime(0.001, noteStart + 0.6);
-
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start(noteStart);
-        osc.stop(noteStart + 0.65);
-      });
-    } catch (e) {
-      console.warn('Completion chime failed', e);
-    }
-  }
-
-  /**
-   * Speak a concise, natural running prompt.
-   * Cancels any pending utterance to avoid lag or delayed cues.
+   * Speak athletic coaching cues naturally.
+   * Cancels any lagging utterance to keep pacing snappy.
    */
   speak(text, { priority = false, delayChime = false } = {}) {
     if (!this.synth) return;
 
-    // Optional subtle pre-chime
-    if (delayChime) {
+    if (delayChime && this.chimeEnabled) {
       this.playPreCueChime();
     }
 
     try {
-      // Cancel previous cue if priority or lagging
       if (this.synth.speaking) {
         this.synth.cancel();
       }
 
-      const utterance = new SpeechSynthesisUtterance(text);
+      // Add conversational polish to robotic-prone strings
+      const polishedText = this.humanizePacing(text);
+
+      const utterance = new SpeechSynthesisUtterance(polishedText);
       utterance.rate = this.speechRate;
       utterance.pitch = this.speechPitch;
       utterance.volume = this.speechVolume;
 
+      // Assign selected voice
       if (this.selectedVoiceURI && this.voices.length > 0) {
         const found = this.voices.find(v => v.voiceURI === this.selectedVoiceURI);
-        if (found) utterance.voice = found;
+        if (found) {
+          utterance.voice = found;
+          utterance.lang = found.lang;
+        }
       }
 
-      // Delay speech slightly if pre-chime was played so audio chime resonates first
-      const delayMs = delayChime ? 280 : 0;
+      const delayMs = (delayChime && this.chimeEnabled) ? 250 : 0;
       setTimeout(() => {
         try {
           this.synth.speak(utterance);
@@ -289,19 +267,78 @@ class AudioManager {
   }
 
   /**
-   * Audio Check / Permission Test
-   * Speaks a clear sample phrase and plays the pre-cue chime.
+   * Formats text with natural punctuation, commas, and contractions so the
+   * speech synthesizer reads with natural human rhythm instead of monotone robotic syllables.
+   */
+  humanizePacing(text) {
+    if (!text) return '';
+    let t = text.trim();
+
+    // Expand percentages naturally
+    t = t.replace(/(\d+)%/g, '$1 percent');
+
+    // Add breathing pause after "10 seconds"
+    t = t.replace(/in 10 seconds,?/gi, 'In 10 seconds,');
+
+    // Add breathing pause before "ready to"
+    t = t.replace(/get ready to/gi, 'get ready to');
+
+    // Replace abrupt commands with natural athletic phrasing
+    if (/^run at/i.test(t)) {
+      t = 'Alright, ' + t;
+    } else if (/^walk and/i.test(t)) {
+      t = 'Nice job, now ' + t;
+    }
+
+    return t;
+  }
+
+  /**
+   * Audition / Sample a specific voice
+   */
+  auditionVoice(voiceURI, callback) {
+    if (!this.synth) return;
+    try {
+      this.synth.cancel();
+      const utterance = new SpeechSynthesisUtterance("Interval Coach ready. Let's start with a warm up walk.");
+      utterance.rate = this.speechRate;
+      utterance.pitch = this.speechPitch;
+      utterance.volume = this.speechVolume;
+
+      const voice = this.voices.find(v => v.voiceURI === voiceURI);
+      if (voice) {
+        utterance.voice = voice;
+        utterance.lang = voice.lang;
+      }
+
+      utterance.onend = () => {
+        if (callback) callback();
+      };
+      utterance.onerror = () => {
+        if (callback) callback();
+      };
+
+      this.synth.speak(utterance);
+    } catch (e) {
+      if (callback) callback();
+    }
+  }
+
+  /**
+   * One-tap audio test
    */
   testAudio(callback) {
     this.unlockAudio();
-    this.playPreCueChime();
+    if (this.chimeEnabled) {
+      this.playPreCueChime();
+    }
     setTimeout(() => {
-      this.speak("Interval Coach audio ready. Run at 60 percent effort.", {
+      this.speak("Interval Coach audio ready! Pick up your pace to 60 percent effort.", {
         priority: true,
         delayChime: false,
       });
       if (callback) callback();
-    }, 320);
+    }, this.chimeEnabled ? 280 : 50);
   }
 
   stopAll() {
@@ -310,10 +347,8 @@ class AudioManager {
         this.synth.cancel();
       } catch (e) {}
     }
-    this.stopKeepAlive();
   }
 }
 
 export const audioManager = new AudioManager();
 export default audioManager;
-
