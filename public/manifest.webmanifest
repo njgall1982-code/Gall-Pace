@@ -1,0 +1,27 @@
+{
+  "name": "IntervalCoach — Audio Running Coach",
+  "short_name": "IntervalCoach",
+  "description": "Mobile audio run/walk interval coach designed to layer structured coaching cues cleanly over your background music (Pandora, Spotify, Amazon Music).",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#020617",
+  "theme_color": "#020617",
+  "categories": ["health", "fitness", "sports", "lifestyle"],
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./favicon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
+
