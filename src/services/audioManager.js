@@ -1,13 +1,11 @@
 /**
  * Studio Neural AudioManager for IntervalCoach
  *
- * Solves both iOS Safari limitations:
- * 1. NEVER calls window.speechSynthesis during workouts (which forces AVSpeechSynthesizer
- *    to hijack the iOS audio session and pause Pandora/Spotify, and is locked to robotic voices).
- * 2. Plays pre-generated Microsoft Azure Neural AI Coach MP3 clips decoded through Web Audio API
+ * Features:
+ * 1. Plays pre-generated Microsoft Azure Neural AI Coach MP3 clips decoded through Web Audio API
  *    (AudioContext + AudioBufferSourceNode) with `navigator.audioSession.type = 'ambient'`.
- *    - In 'ambient' mode on iOS 16.4+, Web Audio mixes directly on top of Pandora/Spotify
- *      without ever touching the Lock Screen media player or pausing background music!
+ * 2. Handles iOS WebKit's non-standard `audioCtx.state === 'interrupted'` state when unlocking
+ *    the screen or returning from background apps, automatically resuming or recreating the context.
  */
 
 export const STUDIO_VOICES = [
@@ -65,13 +63,43 @@ class AudioManager {
     this.audioCtx = null;
     this.activeSource = null;
     this.bufferCache = new Map(); // key: `${voiceId}/${clipKey}` -> AudioBuffer
+    this.rawMp3Cache = new Map(); // key: `${voiceId}/${clipKey}` -> ArrayBuffer (survives AudioContext recreation)
     this.isUnlocked = false;
 
     this.configureAudioSession();
+    this.setupLifecycleRecovery();
   }
 
   /**
-   * Sets iOS Safari 16.4+ navigator.audioSession.type
+   * Automatically recover Web Audio context when the user turns their screen back on,
+   * switches back from Pandora, or touches anywhere on the page.
+   */
+  setupLifecycleRecovery() {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+
+    const recoverAudio = () => {
+      if (!this.audioCtx) return;
+      // On iOS WebKit, locking the screen puts audioCtx into 'interrupted' or 'suspended'
+      if (this.audioCtx.state !== 'running') {
+        this.configureAudioSession();
+        this.audioCtx.resume().catch(() => {});
+      }
+    };
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        recoverAudio();
+      }
+    });
+
+    window.addEventListener('pageshow', recoverAudio);
+    window.addEventListener('focus', recoverAudio);
+    window.addEventListener('touchstart', recoverAudio, { passive: true });
+    window.addEventListener('click', recoverAudio, { passive: true });
+  }
+
+  /**
+   * Sets iOS 16.4+ navigator.audioSession.type
    * 'ambient' maps to AVAudioSessionCategoryAmbient (mixes with Pandora/Spotify without pausing!)
    */
   configureAudioSession() {
@@ -88,16 +116,66 @@ class AudioManager {
 
   getAudioContext() {
     this.configureAudioSession();
-    if (!this.audioCtx) {
-      const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
-      if (AudioCtxClass) {
-        this.audioCtx = new AudioCtxClass();
-      }
+    const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtxClass) return null;
+
+    if (!this.audioCtx || this.audioCtx.state === 'closed') {
+      this.audioCtx = new AudioCtxClass();
+      this. attachStateChangeListener(this.audioCtx);
     }
-    if (this.audioCtx && this.audioCtx.state === 'suspended') {
+
+    // Check !== 'running' to catch both 'suspended' AND iOS WebKit's 'interrupted' state!
+    if (this.audioCtx.state !== 'running') {
       this.audioCtx.resume().catch(() => {});
     }
     return this.audioCtx;
+  }
+
+  attachStateChangeListener(ctx) {
+    if (!ctx) return;
+    ctx.onstatechange = () => {
+      // If iOS interrupts the context and the page is visible, attempt immediate resume
+      if (
+        (ctx.state === 'interrupted' || ctx.state === 'suspended') &&
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'visible' &&
+        this.audioSessionMode !== 'transient'
+      ) {
+        ctx.resume().catch(() => {});
+      }
+    };
+  }
+
+  /**
+   * Ensure the AudioContext is running; if iOS permanently wedged it after screen lock,
+   * recreate a fresh AudioContext cleanly.
+   */
+  async ensureRunningContext() {
+    let ctx = this.getAudioContext();
+    if (!ctx) return null;
+
+    if (ctx.state !== 'running') {
+      try {
+        await Promise.race([
+          ctx.resume(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('resume timeout')), 400))
+        ]);
+      } catch (e) {
+        // Recreate context if iOS wedged the interrupted context
+        try {
+          await ctx.close();
+        } catch (err) {}
+        const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+        this.audioCtx = new AudioCtxClass();
+        this.attachStateChangeListener(this.audioCtx);
+        this.bufferCache.clear(); // Re-decode from rawMp3Cache as needed
+        ctx = this.audioCtx;
+        try {
+          await ctx.resume();
+        } catch (err) {}
+      }
+    }
+    return ctx;
   }
 
   /**
@@ -109,7 +187,7 @@ class AudioManager {
     try {
       const ctx = this.getAudioContext();
       if (ctx) {
-        if (ctx.state === 'suspended') {
+        if (ctx.state !== 'running') {
           ctx.resume().catch(() => {});
         }
         // Play a 1-sample silent buffer to unlock iOS Web Audio pipeline
@@ -120,7 +198,6 @@ class AudioManager {
         source.start(0);
       }
       this.isUnlocked = true;
-      // Pre-warm common clips for the selected voice in background
       this.preloadCommonClips(this.selectedVoiceURI);
       return true;
     } catch (e) {
@@ -143,10 +220,16 @@ class AudioManager {
     if (!ctx) return null;
 
     try {
-      const response = await fetch(`./voices/${validVoice}/${clipKey}.mp3`);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const arrayBuffer = await response.arrayBuffer();
-      const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+      let rawBuffer = this.rawMp3Cache.get(cacheKey);
+      if (!rawBuffer) {
+        const response = await fetch(`./voices/${validVoice}/${clipKey}.mp3`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        rawBuffer = await response.arrayBuffer();
+        this.rawMp3Cache.set(cacheKey, rawBuffer);
+      }
+      // Clone rawBuffer before decodeAudioData because decodeAudioData detaches the buffer
+      const bufferCopy = rawBuffer.slice(0);
+      const audioBuffer = await ctx.decodeAudioData(bufferCopy);
       this.bufferCache.set(cacheKey, audioBuffer);
       return audioBuffer;
     } catch (err) {
@@ -208,7 +291,6 @@ class AudioManager {
       return 'walk';
     }
 
-    // Run or Sprint: snap effort to nearest 5% between 30% and 100%
     const rawEffort = interval.effort || (phase === 'sprint' ? 95 : 60);
     const snapped = Math.min(100, Math.max(30, Math.round(rawEffort / 5) * 5));
     return `run_${snapped}`;
@@ -229,15 +311,14 @@ class AudioManager {
   /**
    * Play a gentle harmonic pre-cue chime on the same Web Audio context
    */
-  playPreCueChime() {
+  playPreCueChime(ctxOverride = null) {
     if (!this.chimeEnabled) return;
     try {
-      const ctx = this.getAudioContext();
+      const ctx = ctxOverride || this.getAudioContext();
       if (!ctx) return;
 
       const now = ctx.currentTime;
 
-      // D5 (587.33 Hz) -> A5 (880 Hz) gentle bell
       const osc1 = ctx.createOscillator();
       const gain1 = ctx.createGain();
       osc1.type = 'sine';
@@ -269,10 +350,10 @@ class AudioManager {
   /**
    * Short acoustic tick for 3, 2, 1 countdown
    */
-  playCountdownBeep(isFinal = false) {
+  async playCountdownBeep(isFinal = false) {
     if (!this.countdownEnabled) return;
     try {
-      const ctx = this.getAudioContext();
+      const ctx = await this.ensureRunningContext();
       if (!ctx) return;
 
       const now = ctx.currentTime;
@@ -292,9 +373,9 @@ class AudioManager {
     } catch (e) {}
   }
 
-  playCompletionChime() {
+  async playCompletionChime() {
     try {
-      const ctx = this.getAudioContext();
+      const ctx = await this.ensureRunningContext();
       if (!ctx) return;
       const notes = [523.25, 659.25, 783.99, 1046.5];
       const now = ctx.currentTime;
@@ -321,17 +402,13 @@ class AudioManager {
    */
   async playClip(clipKey, { voiceId = this.selectedVoiceURI, withChime = false, onEnd = null } = {}) {
     this.configureAudioSession();
-    const ctx = this.getAudioContext();
+    const ctx = await this.ensureRunningContext();
     if (!ctx) {
       if (onEnd) onEnd();
       return;
     }
 
     try {
-      if (ctx.state === 'suspended') {
-        await ctx.resume();
-      }
-
       // Stop any currently playing voice clip
       if (this.activeSource) {
         try {
@@ -348,7 +425,7 @@ class AudioManager {
       }
 
       if (withChime && this.chimeEnabled) {
-        this.playPreCueChime();
+        this.playPreCueChime(ctx);
       }
 
       const delaySec = (withChime && this.chimeEnabled) ? 0.28 : 0.02;
@@ -369,7 +446,6 @@ class AudioManager {
         if (this.activeSource === source) {
           this.activeSource = null;
         }
-        // If using 'transient' ducking mode, suspend context when done so iOS un-ducks music
         if (this.audioSessionMode === 'transient' && ctx.state === 'running') {
           setTimeout(() => {
             if (!this.activeSource) {
@@ -387,17 +463,11 @@ class AudioManager {
     }
   }
 
-  /**
-   * Speak interval start using Studio Neural clips
-   */
   speakInterval(interval) {
     const clipKey = this.getClipKeyForInterval(interval);
     this.playClip(clipKey, { withChime: true });
   }
 
-  /**
-   * Speak 10-second warning using Studio Neural clips
-   */
   speakWarning(nextInterval) {
     const clipKey = this.getWarningClipKey(nextInterval);
     if (clipKey) {

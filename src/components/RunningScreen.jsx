@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Play, Pause, SkipForward, SkipBack, X, Volume2, VolumeX,
-  Sun, ShieldAlert, CheckCircle2, Zap, Footprints, Wind, Flame, Plus
+  Sun, ShieldAlert, CheckCircle2, Zap, Footprints, Wind, Flame, Plus, Lock
 } from 'lucide-react';
 import { PHASE_CONFIG, formatTime, formatTimeHuman } from '../data/defaultWorkouts';
 import { audioManager } from '../services/audioManager';
@@ -16,6 +16,11 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
   const [isMuted, setIsMuted] = useState(false);
   const [showExitConfirm, setShowExitConfirm] = useState(false);
   const [highContrastMode, setHighContrastMode] = useState(false);
+  const [isPocketLocked, setIsPocketLocked] = useState(false);
+
+  // Wall-clock deadline for the current block so brief app switches or screen wakes stay accurate
+  const blockEndTimestampRef = useRef(Date.now() + (workout.intervals[0]?.duration || 60) * 1000);
+  const lastTapTimeRef = useRef(0);
 
   // Keep a ref to isMuted so timer callbacks always read the freshest state
   const isMutedRef = useRef(false);
@@ -49,22 +54,35 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
     .reduce((acc, curr) => acc + curr.duration, 0);
   const remainingWorkoutSeconds = Math.max(0, secondsLeft + futureIntervalsSeconds);
 
-  // WakeLock: Request upon mount, release upon unmount
+  // WakeLock & Screen Wake Recovery
   useEffect(() => {
     wakeLockService.request();
     audioManager.unlockAudio();
     audioManager.preloadWorkoutClips(workout);
 
+    const handleVisibilityOrFocus = async () => {
+      if (document.visibilityState === 'visible') {
+        wakeLockService.request();
+        await audioManager.ensureRunningContext();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+
     return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
       wakeLockService.release();
       audioManager.stopAll();
     };
   }, []);
 
-  // Sync wakeLock with pause/resume
+  // Sync wakeLock & wall-clock deadline with pause/resume
   useEffect(() => {
     if (isRunning) {
       wakeLockService.request();
+      blockEndTimestampRef.current = Date.now() + secondsLeft * 1000;
     }
   }, [isRunning]);
 
@@ -72,8 +90,11 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
   useEffect(() => {
     if (!currentInterval) return;
 
-    setSecondsLeft(currentInterval.duration);
-    setCurrentBlockTotal(currentInterval.duration);
+    const dur = currentInterval.duration || 60;
+    setSecondsLeft(dur);
+    setCurrentBlockTotal(dur);
+    blockEndTimestampRef.current = Date.now() + dur * 1000;
+
     cueStateRef.current = {
       announcedStart: false,
       announcedHalfway: false,
@@ -101,21 +122,24 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
     }
   }, [currentIdx, workout]);
 
-  // Main 1-Second Timer Tick
+  // Main Wall-Clock Synced Timer Tick
   useEffect(() => {
     if (!isRunning) return;
 
     const timer = setInterval(() => {
+      const now = Date.now();
+      const computedRemaining = Math.max(0, Math.round((blockEndTimestampRef.current - now) / 1000));
+
       setSecondsLeft((prev) => {
-        // Track stats
-        statsRef.current.totalTime += 1;
+        const delta = Math.max(1, prev - computedRemaining);
+        statsRef.current.totalTime += delta;
         if (currentInterval.phase === 'run' || currentInterval.phase === 'sprint') {
-          statsRef.current.runTime += 1;
+          statsRef.current.runTime += delta;
         } else {
-          statsRef.current.walkTime += 1;
+          statsRef.current.walkTime += delta;
         }
 
-        const remaining = prev - 1;
+        const remaining = computedRemaining;
         const muted = isMutedRef.current;
 
         // Halfway cue check (only for intervals >= 90s)
@@ -124,7 +148,8 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
           !muted &&
           audioManager.halfwayCueEnabled &&
           currentBlockTotal >= 90 &&
-          remaining === halfwayPoint &&
+          remaining <= halfwayPoint &&
+          remaining >= halfwayPoint - 2 &&
           !cueStateRef.current.announcedHalfway
         ) {
           cueStateRef.current.announcedHalfway = true;
@@ -135,7 +160,8 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
         if (
           !muted &&
           audioManager.tenSecondWarningEnabled &&
-          remaining === 10 &&
+          remaining <= 10 &&
+          remaining >= 8 &&
           !cueStateRef.current.announcedTenSec &&
           nextInterval
         ) {
@@ -167,6 +193,7 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
           // Check if workout is finished
           if (currentIdx >= workout.intervals.length - 1) {
             setIsRunning(false);
+            setIsPocketLocked(false);
             if (!muted) {
               audioManager.playCompletionChime();
               setTimeout(() => {
@@ -212,16 +239,16 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
     isMutedRef.current = nextMuted;
 
     if (nextMuted) {
-      // Immediately silence any active speech/chime
       audioManager.stopAll();
     } else {
-      // Re-unlock audio inside the tap gesture and announce current interval so user knows voice is back!
       audioManager.unlockAudio();
       audioManager.speakInterval(currentInterval);
     }
   };
 
   const handleAddThirtySeconds = () => {
+    audioManager.unlockAudio();
+    blockEndTimestampRef.current += 30 * 1000;
     setSecondsLeft((prev) => prev + 30);
     setCurrentBlockTotal((prev) => prev + 30);
   };
@@ -238,7 +265,7 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
   const handleSkipPrev = () => {
     audioManager.unlockAudio();
     if (secondsLeft < currentBlockTotal - 3) {
-      // If elapsed more than 3s, restart current interval
+      blockEndTimestampRef.current = Date.now() + currentBlockTotal * 1000;
       setSecondsLeft(currentBlockTotal);
       cueStateRef.current = {
         announcedStart: false,
@@ -252,6 +279,16 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
     } else if (currentIdx > 0) {
       setCurrentIdx(currentIdx - 1);
     }
+  };
+
+  // Double-tap handler to exit Pocket Lock / OLED Blackout mode
+  const handlePocketOverlayTap = () => {
+    const now = Date.now();
+    if (now - lastTapTimeRef.current < 400) {
+      audioManager.unlockAudio();
+      setIsPocketLocked(false);
+    }
+    lastTapTimeRef.current = now;
   };
 
   // Percentage of current interval completed (0 to 100)
@@ -293,16 +330,30 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
             <div className="text-xs font-black text-white flex items-center gap-1.5 mt-0.5">
               <span>Block {currentIdx + 1}/{workout.intervals.length}</span>
               <span className="text-slate-600">•</span>
-              <span className="text-slate-400 font-mono">{formatTime(remainingWorkoutSeconds)} total left</span>
+              <span className="text-slate-400 font-mono">{formatTime(remainingWorkoutSeconds)} left</span>
             </div>
           </div>
 
-          {/* Clear Utility Controls: Voice Mute Pill, Sunlight Mode, End Run */}
+          {/* Utility Controls: Pocket Blackout, Voice Mute Pill, Sunlight Mode, End Run */}
           <div className="flex items-center gap-1.5 shrink-0">
+            {/* Pocket Screen Blackout / Lock Button */}
+            <button
+              onClick={() => {
+                audioManager.unlockAudio();
+                wakeLockService.request();
+                setIsPocketLocked(true);
+              }}
+              className="flex items-center gap-1 px-2.5 py-2 rounded-full border bg-slate-900 text-slate-300 border-slate-700 hover:border-slate-600 text-xs font-bold transition-all active:scale-95"
+              title="Pocket Blackout Mode (Turns screen black & locks buttons while keeping voice active)"
+            >
+              <Lock className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Pocket</span>
+            </button>
+
             {/* Explicit Mute / Unmute Pill Button */}
             <button
               onClick={handleToggleMute}
-              className={`flex items-center gap-1.5 px-3 py-2 rounded-full border text-xs font-bold transition-all active:scale-95 ${
+              className={`flex items-center gap-1 px-2.5 py-2 rounded-full border text-xs font-bold transition-all active:scale-95 ${
                 isMuted
                   ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
                   : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
@@ -317,7 +368,7 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
               ) : (
                 <>
                   <Volume2 className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Voice On</span>
+                  <span>Voice</span>
                 </>
               )}
             </button>
@@ -517,6 +568,25 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
           </button>
         </div>
       </footer>
+
+      {/* OLED Pitch-Black Pocket Lock Overlay (Keeps Voice Active & Saves Battery in Pocket) */}
+      {isPocketLocked && (
+        <div
+          onClick={handlePocketOverlayTap}
+          className="fixed inset-0 z-50 bg-black flex flex-col items-center justify-center p-6 text-center select-none cursor-pointer"
+        >
+          <Lock className="w-8 h-8 text-neutral-700 mb-3" />
+          <div className="font-mono text-4xl font-bold text-neutral-700">
+            {formatTime(secondsLeft)}
+          </div>
+          <div className="text-xs font-semibold text-neutral-600 mt-1 uppercase tracking-widest">
+            {currentInterval.name || currentPhaseConfig.label}
+          </div>
+          <div className="mt-10 px-4 py-2 rounded-full border border-neutral-800 text-neutral-600 text-xs font-medium">
+            Pocket Mode Active • Double-tap screen to unlock
+          </div>
+        </div>
+      )}
 
       {/* Exit Confirmation Modal */}
       {showExitConfirm && (
