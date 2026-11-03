@@ -53,14 +53,15 @@ export const storageService = {
     try {
       const data = localStorage.getItem(SETTINGS_KEY);
       const defaults = {
-        chimeEnabled: false,
+        chimeEnabled: true,
         tenSecondWarning: true,
         countdownBeeps: true,
         halfwayCues: true,
-        speechRate: 0.98,
+        speechRate: 1.0,
         speechPitch: 1.0,
         speechVolume: 1.0,
-        selectedVoiceURI: null,
+        selectedVoiceURI: 'us-andrew',
+        audioSessionMode: 'ambient',
         hapticVibration: true,
       };
       return data ? { ...defaults, ...JSON.parse(data) } : defaults;

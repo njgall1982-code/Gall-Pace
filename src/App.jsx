@@ -7,7 +7,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { WorkoutCompleteModal } from './components/WorkoutCompleteModal';
 import { DEFAULT_WORKOUTS } from './data/defaultWorkouts';
 import { storageService } from './services/storage';
-import { audioManager } from './services/audioManager';
+import { audioManager, STUDIO_VOICES } from './services/audioManager';
 import { Plus, Sparkles, Filter, Download, Music2, Volume2, ShieldCheck, Play } from 'lucide-react';
 
 export function App() {
@@ -33,9 +33,16 @@ export function App() {
       if (settings.halfwayCues !== undefined) audioManager.halfwayCueEnabled = settings.halfwayCues;
       if (settings.silentStart !== undefined) audioManager.silentStart = settings.silentStart;
       if (settings.speechRate) audioManager.speechRate = settings.speechRate;
-      if (settings.speechPitch) audioManager.speechPitch = settings.speechPitch;
       if (settings.speechVolume) audioManager.speechVolume = settings.speechVolume;
-      if (settings.selectedVoiceURI) audioManager.selectedVoiceURI = settings.selectedVoiceURI;
+      if (settings.audioSessionMode) {
+        audioManager.audioSessionMode = settings.audioSessionMode;
+        audioManager.configureAudioSession();
+      }
+      if (settings.selectedVoiceURI && STUDIO_VOICES.some(v => v.id === settings.selectedVoiceURI)) {
+        audioManager.selectedVoiceURI = settings.selectedVoiceURI;
+      } else {
+        audioManager.selectedVoiceURI = 'us-andrew';
+      }
     }
 
     // Capture PWA install prompt

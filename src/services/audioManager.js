@@ -1,40 +1,83 @@
 /**
- * AudioManager for IntervalCoach
- * 
- * Configured specifically for background music mixing on iOS (Pandora, Spotify, Amazon Music):
- * - Uses navigator.audioSession type = 'transient' / 'ambient' on iOS 16.4+ to prevent pausing background music.
- * - Filters voices strictly to English (American, British, Australian).
- * - Human-like pacing and prosody.
+ * Studio Neural AudioManager for IntervalCoach
+ *
+ * Solves both iOS Safari limitations:
+ * 1. NEVER calls window.speechSynthesis during workouts (which forces AVSpeechSynthesizer
+ *    to hijack the iOS audio session and pause Pandora/Spotify, and is locked to robotic voices).
+ * 2. Plays pre-generated Microsoft Azure Neural AI Coach MP3 clips decoded through Web Audio API
+ *    (AudioContext + AudioBufferSourceNode) with `navigator.audioSession.type = 'ambient'`.
+ *    - In 'ambient' mode on iOS 16.4+, Web Audio mixes directly on top of Pandora/Spotify
+ *      without ever touching the Lock Screen media player or pausing background music!
  */
+
+export const STUDIO_VOICES = [
+  {
+    id: 'us-andrew',
+    name: 'Coach Andrew (Studio Neural)',
+    region: 'US',
+    flag: '🇺🇸',
+    accent: 'American Male — Warm & Motivating',
+    lang: 'en-US',
+  },
+  {
+    id: 'us-ava',
+    name: 'Coach Ava (Studio Neural)',
+    region: 'US',
+    flag: '🇺🇸',
+    accent: 'American Female — Energetic & Natural',
+    lang: 'en-US',
+  },
+  {
+    id: 'uk-ryan',
+    name: 'Coach Ryan (Studio Neural)',
+    region: 'UK',
+    flag: '🇬🇧',
+    accent: 'British Male — Crisp Track Coach',
+    lang: 'en-GB',
+  },
+  {
+    id: 'au-natasha',
+    name: 'Coach Natasha (Studio Neural)',
+    region: 'AU',
+    flag: '🇦🇺',
+    accent: 'Australian Female — Upbeat & Bright',
+    lang: 'en-AU',
+  },
+];
 
 class AudioManager {
   constructor() {
-    this.synth = typeof window !== 'undefined' ? window.speechSynthesis : null;
-    this.voices = [];
-    this.selectedVoiceURI = null;
-    this.speechRate = 0.98;
-    this.speechPitch = 1.0;
+    this.voices = STUDIO_VOICES;
+    this.selectedVoiceURI = 'us-andrew';
+    this.speechRate = 1.0;
     this.speechVolume = 1.0;
-    
-    // Cues settings
-    this.chimeEnabled = false; // Default off so music is never interrupted
+
+    // Audio session mode: 'ambient' mixes over Pandora without pausing; 'transient' ducks
+    this.audioSessionMode = 'ambient';
+
+    // Coaching cue toggles
+    this.chimeEnabled = true;
     this.tenSecondWarningEnabled = true;
     this.countdownEnabled = true;
     this.halfwayCueEnabled = true;
-    this.silentStart = false; // If true, don't speak immediately on hitting start
+    this.silentStart = false;
 
+    this.audioCtx = null;
+    this.activeSource = null;
+    this.bufferCache = new Map(); // key: `${voiceId}/${clipKey}` -> AudioBuffer
     this.isUnlocked = false;
 
-    // Set iOS AudioSession to transient / ambient so background music isn't paused
     this.configureAudioSession();
-    this.initVoices();
   }
 
+  /**
+   * Sets iOS Safari 16.4+ navigator.audioSession.type
+   * 'ambient' maps to AVAudioSessionCategoryAmbient (mixes with Pandora/Spotify without pausing!)
+   */
   configureAudioSession() {
     if (typeof navigator !== 'undefined' && 'audioSession' in navigator) {
       try {
-        // 'transient' is specifically designed for speech/alerts over background music
-        navigator.audioSession.type = 'transient';
+        navigator.audioSession.type = this.audioSessionMode || 'ambient';
       } catch (e) {
         try {
           navigator.audioSession.type = 'ambient';
@@ -43,225 +86,367 @@ class AudioManager {
     }
   }
 
-  initVoices() {
-    if (!this.synth) return;
-
-    const loadVoices = () => {
-      const allVoices = this.synth.getVoices() || [];
-      if (allVoices.length === 0) return;
-
-      // Filter STRICTLY to English (US, UK, AU, CA, IE, NZ)
-      this.voices = this.filterEnglishVoices(allVoices);
-
-      // Auto-select best natural voice if none currently selected
-      if (!this.selectedVoiceURI && this.voices.length > 0) {
-        const bestVoice = this.findBestVoice(this.voices);
-        if (bestVoice) {
-          this.selectedVoiceURI = bestVoice.voiceURI;
-        }
+  getAudioContext() {
+    this.configureAudioSession();
+    if (!this.audioCtx) {
+      const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtxClass) {
+        this.audioCtx = new AudioCtxClass();
       }
-    };
-
-    loadVoices();
-    if (this.synth.onvoiceschanged !== undefined) {
-      this.synth.onvoiceschanged = loadVoices;
     }
+    if (this.audioCtx && this.audioCtx.state === 'suspended') {
+      this.audioCtx.resume().catch(() => {});
+    }
+    return this.audioCtx;
   }
 
   /**
-   * Filter strictly to English (US, British, Australian, Canadian, Irish, Kiwi)
-   * Discards all other languages completely.
+   * Must be called inside a user click/tap gesture (e.g., Start Run or Test Audio)
+   * Unlocks Web Audio API on iOS without interrupting Pandora.
    */
-  filterEnglishVoices(rawList) {
-    const allowedPrefixes = ['en-us', 'en-gb', 'en-au', 'en-ca', 'en-ie', 'en-nz', 'en_us', 'en_gb', 'en_au'];
-    
-    const filtered = rawList.filter((v) => {
-      const lang = (v.lang || '').toLowerCase().replace(/_/g, '-');
-      // Must start with en and match our regional targets
-      if (!lang.startsWith('en')) return false;
-      return allowedPrefixes.some(p => lang.startsWith(p)) || lang === 'en';
-    });
-
-    // Sort quality first (Siri, Enhanced, Natural, Neural)
-    return filtered.sort((a, b) => {
-      const isQuality = (v) => {
-        const n = (v.name || '').toLowerCase();
-        return n.includes('natural') || n.includes('enhanced') || n.includes('siri') || n.includes('neural') || n.includes('premium');
-      };
-      const aQ = isQuality(a);
-      const bQ = isQuality(b);
-      if (aQ && !bQ) return -1;
-      if (!aQ && bQ) return 1;
-      return a.name.localeCompare(b.name);
-    });
-  }
-
-  /**
-   * Helper to return clean formatted label for UI dropdown
-   */
-  getVoiceLabel(v) {
-    const lang = (v.lang || '').toLowerCase();
-    let flag = '🇺🇸';
-    let region = 'US';
-
-    if (lang.includes('gb') || lang.includes('uk')) {
-      flag = '🇬🇧';
-      region = 'UK';
-    } else if (lang.includes('au')) {
-      flag = '🇦🇺';
-      region = 'AU';
-    } else if (lang.includes('ca')) {
-      flag = '🇨🇦';
-      region = 'CA';
-    } else if (lang.includes('ie')) {
-      flag = '🇮🇪';
-      region = 'IE';
-    }
-
-    const isHighQuality = /natural|enhanced|siri|neural|premium/i.test(v.name);
-    const star = isHighQuality ? '⭐ ' : '';
-    
-    // Clean up redundant voice name artifacts
-    let cleanName = v.name
-      .replace(/\(en-[a-z]+\)/gi, '')
-      .replace(/English \([A-Za-z ]+\)/gi, '')
-      .trim();
-
-    return `${star}${flag} [${region}] ${cleanName}`;
-  }
-
-  findBestVoice(voiceList) {
-    // 1. Siri / Enhanced
-    const siri = voiceList.find(v => {
-      const n = v.name.toLowerCase();
-      return (n.includes('siri') || n.includes('enhanced') || n.includes('premium')) && !n.includes('compact');
-    });
-    if (siri) return siri;
-
-    // 2. Google / Neural
-    const neural = voiceList.find(v => {
-      const n = v.name.toLowerCase();
-      return n.includes('natural') || n.includes('google');
-    });
-    if (neural) return neural;
-
-    // 3. Known athletic names
-    const names = ['daniel', 'samantha', 'karen', 'oliver', 'serena', 'ava', 'guy', 'jenny'];
-    const matched = voiceList.find(v => {
-      const n = v.name.toLowerCase();
-      return names.some(name => n.includes(name)) && !n.includes('compact');
-    });
-    if (matched) return matched;
-
-    return voiceList[0] || null;
-  }
-
   unlockAudio() {
     this.configureAudioSession();
-    if (this.isUnlocked) return true;
-
     try {
-      if (this.synth) {
-        const utterance = new SpeechSynthesisUtterance(' ');
-        utterance.volume = 0.01;
-        this.synth.speak(utterance);
+      const ctx = this.getAudioContext();
+      if (ctx) {
+        if (ctx.state === 'suspended') {
+          ctx.resume().catch(() => {});
+        }
+        // Play a 1-sample silent buffer to unlock iOS Web Audio pipeline
+        const buffer = ctx.createBuffer(1, 1, 22050);
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(ctx.destination);
+        source.start(0);
       }
       this.isUnlocked = true;
+      // Pre-warm common clips for the selected voice in background
+      this.preloadCommonClips(this.selectedVoiceURI);
       return true;
     } catch (e) {
+      console.warn('Audio unlock warning:', e);
       return false;
     }
   }
 
-  refreshVoices() {
-    if (!this.synth) return [];
-    const raw = this.synth.getVoices() || [];
-    this.voices = this.filterEnglishVoices(raw);
-    return this.voices;
-  }
+  /**
+   * Fetch and decode a studio neural MP3 clip into a Web Audio AudioBuffer
+   */
+  async loadClipBuffer(voiceId, clipKey) {
+    const validVoice = STUDIO_VOICES.some(v => v.id === voiceId) ? voiceId : 'us-andrew';
+    const cacheKey = `${validVoice}/${clipKey}`;
+    if (this.bufferCache.has(cacheKey)) {
+      return this.bufferCache.get(cacheKey);
+    }
 
-  speak(text, { priority = false } = {}) {
-    if (!this.synth) return;
-
-    this.configureAudioSession();
+    const ctx = this.getAudioContext();
+    if (!ctx) return null;
 
     try {
-      if (this.synth.speaking) {
-        this.synth.cancel();
+      const response = await fetch(`./voices/${validVoice}/${clipKey}.mp3`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const arrayBuffer = await response.arrayBuffer();
+      const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+      this.bufferCache.set(cacheKey, audioBuffer);
+      return audioBuffer;
+    } catch (err) {
+      console.warn(`Could not load clip ${cacheKey}:`, err);
+      return null;
+    }
+  }
+
+  /**
+   * Preload common clips for a voice so playback during a run is 0ms instant and offline-safe
+   */
+  preloadCommonClips(voiceId = this.selectedVoiceURI) {
+    const common = [
+      'test', 'warmup_3m', 'warmup_2m', 'warmup',
+      'walk_1m', 'walk_90s', 'walk_30s', 'walk',
+      'run_40', 'run_45', 'run_50', 'run_60', 'run_75', 'run_80', 'run_85', 'run_90', 'run_95', 'run_100',
+      'warn_run', 'warn_walk', 'warn_sprint', 'warn_cooldown',
+      'halfway', 'complete', 'cooldown_3m', 'cooldown_2m'
+    ];
+    common.forEach((clipKey) => {
+      this.loadClipBuffer(voiceId, clipKey);
+    });
+  }
+
+  /**
+   * Preload all clips needed for a specific workout
+   */
+  preloadWorkoutClips(workout) {
+    if (!workout || !workout.intervals) return;
+    this.preloadCommonClips(this.selectedVoiceURI);
+    workout.intervals.forEach((interval) => {
+      const key = this.getClipKeyForInterval(interval);
+      if (key) this.loadClipBuffer(this.selectedVoiceURI, key);
+    });
+  }
+
+  /**
+   * Maps an interval object to the appropriate studio neural MP3 clip key
+   */
+  getClipKeyForInterval(interval) {
+    if (!interval) return 'run_60';
+    const phase = interval.phase || 'run';
+    const dur = interval.duration || 60;
+
+    if (phase === 'warmup') {
+      if (dur === 180) return 'warmup_3m';
+      if (dur === 120) return 'warmup_2m';
+      return 'warmup';
+    }
+    if (phase === 'cooldown') {
+      if (dur === 180) return 'cooldown_3m';
+      if (dur === 120) return 'cooldown_2m';
+      return 'cooldown';
+    }
+    if (phase === 'walk') {
+      if (dur === 60) return 'walk_1m';
+      if (dur === 90) return 'walk_90s';
+      if (dur === 30) return 'walk_30s';
+      return 'walk';
+    }
+
+    // Run or Sprint: snap effort to nearest 5% between 30% and 100%
+    const rawEffort = interval.effort || (phase === 'sprint' ? 95 : 60);
+    const snapped = Math.min(100, Math.max(30, Math.round(rawEffort / 5) * 5));
+    return `run_${snapped}`;
+  }
+
+  /**
+   * Maps an upcoming interval to its 10-second warning clip key
+   */
+  getWarningClipKey(nextInterval) {
+    if (!nextInterval) return null;
+    const phase = nextInterval.phase || 'run';
+    if (phase === 'walk') return 'warn_walk';
+    if (phase === 'sprint') return 'warn_sprint';
+    if (phase === 'cooldown') return 'warn_cooldown';
+    return 'warn_run';
+  }
+
+  /**
+   * Play a gentle harmonic pre-cue chime on the same Web Audio context
+   */
+  playPreCueChime() {
+    if (!this.chimeEnabled) return;
+    try {
+      const ctx = this.getAudioContext();
+      if (!ctx) return;
+
+      const now = ctx.currentTime;
+
+      // D5 (587.33 Hz) -> A5 (880 Hz) gentle bell
+      const osc1 = ctx.createOscillator();
+      const gain1 = ctx.createGain();
+      osc1.type = 'sine';
+      osc1.frequency.setValueAtTime(587.33, now);
+      gain1.gain.setValueAtTime(0.001, now);
+      gain1.gain.linearRampToValueAtTime(0.22, now + 0.015);
+      gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
+      osc1.connect(gain1);
+      gain1.connect(ctx.destination);
+      osc1.start(now);
+      osc1.stop(now + 0.26);
+
+      const osc2 = ctx.createOscillator();
+      const gain2 = ctx.createGain();
+      osc2.type = 'sine';
+      osc2.frequency.setValueAtTime(880, now + 0.09);
+      gain2.gain.setValueAtTime(0.001, now + 0.09);
+      gain2.gain.linearRampToValueAtTime(0.25, now + 0.11);
+      gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.42);
+      osc2.connect(gain2);
+      gain2.connect(ctx.destination);
+      osc2.start(now + 0.09);
+      osc2.stop(now + 0.43);
+    } catch (e) {
+      console.warn('Chime error:', e);
+    }
+  }
+
+  /**
+   * Short acoustic tick for 3, 2, 1 countdown
+   */
+  playCountdownBeep(isFinal = false) {
+    if (!this.countdownEnabled) return;
+    try {
+      const ctx = this.getAudioContext();
+      if (!ctx) return;
+
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = isFinal ? 'triangle' : 'sine';
+      osc.frequency.setValueAtTime(isFinal ? 1174.66 : 880, now);
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(isFinal ? 0.3 : 0.2, now + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + (isFinal ? 0.22 : 0.12));
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + (isFinal ? 0.23 : 0.13));
+    } catch (e) {}
+  }
+
+  playCompletionChime() {
+    try {
+      const ctx = this.getAudioContext();
+      if (!ctx) return;
+      const notes = [523.25, 659.25, 783.99, 1046.5];
+      const now = ctx.currentTime;
+      notes.forEach((freq, idx) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        const start = now + idx * 0.11;
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, start);
+        gain.gain.setValueAtTime(0.001, start);
+        gain.gain.linearRampToValueAtTime(0.28, start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, start + 0.5);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(start);
+        osc.stop(start + 0.52);
+      });
+    } catch (e) {}
+  }
+
+  /**
+   * Core playback method: plays a Studio Neural clip via Web Audio API BufferSource
+   * so Pandora/Spotify continues playing uninterrupted in the background!
+   */
+  async playClip(clipKey, { voiceId = this.selectedVoiceURI, withChime = false, onEnd = null } = {}) {
+    this.configureAudioSession();
+    const ctx = this.getAudioContext();
+    if (!ctx) {
+      if (onEnd) onEnd();
+      return;
+    }
+
+    try {
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
       }
 
-      const polishedText = this.humanizePacing(text);
-      const utterance = new SpeechSynthesisUtterance(polishedText);
-      utterance.rate = this.speechRate;
-      utterance.pitch = this.speechPitch;
-      utterance.volume = this.speechVolume;
+      // Stop any currently playing voice clip
+      if (this.activeSource) {
+        try {
+          this.activeSource.stop();
+          this.activeSource.disconnect();
+        } catch (e) {}
+        this.activeSource = null;
+      }
 
-      if (this.selectedVoiceURI && this.voices.length > 0) {
-        const found = this.voices.find(v => v.voiceURI === this.selectedVoiceURI);
-        if (found) {
-          utterance.voice = found;
-          utterance.lang = found.lang;
+      const buffer = await this.loadClipBuffer(voiceId, clipKey);
+      if (!buffer) {
+        if (onEnd) onEnd();
+        return;
+      }
+
+      if (withChime && this.chimeEnabled) {
+        this.playPreCueChime();
+      }
+
+      const delaySec = (withChime && this.chimeEnabled) ? 0.28 : 0.02;
+      const source = ctx.createBufferSource();
+      const gainNode = ctx.createGain();
+
+      source.buffer = buffer;
+      source.playbackRate.value = this.speechRate || 1.0;
+
+      // Boost voice gain slightly (1.4x) so it cuts cleanly over background music
+      gainNode.gain.value = Math.min(2.0, (this.speechVolume || 1.0) * 1.4);
+
+      source.connect(gainNode);
+      gainNode.connect(ctx.destination);
+
+      this.activeSource = source;
+      source.onended = () => {
+        if (this.activeSource === source) {
+          this.activeSource = null;
         }
-      }
+        // If using 'transient' ducking mode, suspend context when done so iOS un-ducks music
+        if (this.audioSessionMode === 'transient' && ctx.state === 'running') {
+          setTimeout(() => {
+            if (!this.activeSource) {
+              ctx.suspend().catch(() => {});
+            }
+          }, 120);
+        }
+        if (onEnd) onEnd();
+      };
 
-      this.synth.speak(utterance);
-    } catch (e) {
-      console.warn('Speak error:', e);
+      source.start(ctx.currentTime + delaySec);
+    } catch (err) {
+      console.warn('Error playing neural clip:', err);
+      if (onEnd) onEnd();
     }
   }
 
-  humanizePacing(text) {
-    if (!text) return '';
-    let t = text.trim();
-    t = t.replace(/(\d+)%/g, '$1 percent');
-    t = t.replace(/in 10 seconds,?/gi, 'In 10 seconds,');
-    if (/^run at/i.test(t)) {
-      t = 'Alright, ' + t;
-    } else if (/^walk and/i.test(t)) {
-      t = 'Nice job, now ' + t;
-    }
-    return t;
+  /**
+   * Speak interval start using Studio Neural clips
+   */
+  speakInterval(interval) {
+    const clipKey = this.getClipKeyForInterval(interval);
+    this.playClip(clipKey, { withChime: true });
   }
 
-  auditionVoice(voiceURI, callback) {
-    if (!this.synth) return;
-    this.configureAudioSession();
-
-    try {
-      this.synth.cancel();
-      const utterance = new SpeechSynthesisUtterance("Interval Coach ready. Let's start with a warm up walk.");
-      utterance.rate = this.speechRate;
-      utterance.pitch = this.speechPitch;
-      utterance.volume = this.speechVolume;
-
-      const voice = this.voices.find(v => v.voiceURI === voiceURI);
-      if (voice) {
-        utterance.voice = voice;
-        utterance.lang = voice.lang;
-      }
-
-      utterance.onend = () => { if (callback) callback(); };
-      utterance.onerror = () => { if (callback) callback(); };
-
-      this.synth.speak(utterance);
-    } catch (e) {
-      if (callback) callback();
+  /**
+   * Speak 10-second warning using Studio Neural clips
+   */
+  speakWarning(nextInterval) {
+    const clipKey = this.getWarningClipKey(nextInterval);
+    if (clipKey) {
+      this.playClip(clipKey, { withChime: true });
     }
+  }
+
+  speakHalfway() {
+    this.playClip('halfway', { withChime: false });
+  }
+
+  speakComplete() {
+    this.playClip('complete', { withChime: false });
+  }
+
+  getVoiceLabel(v) {
+    return `⭐ ${v.flag} [${v.region}] ${v.name} — ${v.accent}`;
+  }
+
+  refreshVoices() {
+    return STUDIO_VOICES;
+  }
+
+  auditionVoice(voiceId, callback) {
+    const targetVoice = STUDIO_VOICES.some(v => v.id === voiceId) ? voiceId : 'us-andrew';
+    this.unlockAudio();
+    this.playClip('test', {
+      voiceId: targetVoice,
+      withChime: false,
+      onEnd: callback,
+    });
   }
 
   testAudio(callback) {
     this.unlockAudio();
-    this.speak("Interval Coach audio ready! Pick up your pace to 60 percent effort.", {
-      priority: true
+    this.playClip('test', {
+      voiceId: this.selectedVoiceURI,
+      withChime: true,
+      onEnd: callback,
     });
-    if (callback) callback();
   }
 
   stopAll() {
-    if (this.synth) {
+    if (this.activeSource) {
       try {
-        this.synth.cancel();
+        this.activeSource.stop();
+        this.activeSource.disconnect();
       } catch (e) {}
+      this.activeSource = null;
     }
   }
 }

@@ -46,6 +46,7 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
   useEffect(() => {
     wakeLockService.request();
     audioManager.unlockAudio();
+    audioManager.preloadWorkoutClips(workout);
 
     return () => {
       wakeLockService.release();
@@ -81,20 +82,13 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
       }
     }
 
-    // Play initial speech cue (unless silentStart is enabled on block 0)
+    // Play initial Studio Neural clip (unless silentStart is enabled on block 0)
     if (!isMuted) {
       const isFirstBlock = currentIdx === 0;
       if (isFirstBlock && audioManager.silentStart) {
         cueStateRef.current.announcedStart = true;
       } else {
-        let cueText = currentInterval.cue;
-        if (!cueText) {
-          const effortText = currentInterval.effort ? ` at ${currentInterval.effort} percent effort` : '';
-          const durText = formatTimeHuman(currentInterval.duration);
-          cueText = `${currentPhaseConfig.label}! ${durText}${effortText}.`;
-        }
-
-        audioManager.speak(cueText, { priority: true });
+        audioManager.speakInterval(currentInterval);
         cueStateRef.current.announcedStart = true;
       }
     }
@@ -126,7 +120,7 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
           !cueStateRef.current.announcedHalfway
         ) {
           cueStateRef.current.announcedHalfway = true;
-          audioManager.speak(`Halfway mark. ${formatTimeHuman(remaining)} remaining.`);
+          audioManager.speakHalfway();
         }
 
         // 10-Second Warning Cue
@@ -138,14 +132,7 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
           nextInterval
         ) {
           cueStateRef.current.announcedTenSec = true;
-          const nextPhaseName = PHASE_CONFIG[nextInterval.phase]?.label || nextInterval.phase.toUpperCase();
-          const nextEffort = nextInterval.effort ? ` at ${nextInterval.effort} percent effort` : '';
-          const nextDur = formatTimeHuman(nextInterval.duration);
-
-          audioManager.speak(
-            `In 10 seconds, get ready to ${nextPhaseName.toLowerCase()} for ${nextDur}${nextEffort}.`,
-            { delayChime: true }
-          );
+          audioManager.speakWarning(nextInterval);
         }
 
         // 3, 2, 1 Countdown Beeps
@@ -172,7 +159,7 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
             setIsRunning(false);
             audioManager.playCompletionChime();
             setTimeout(() => {
-              audioManager.speak("Workout complete! Outstanding job. You crushed it today!", { priority: true });
+              audioManager.speakComplete();
             }, 600);
 
             storageService.logCompletedWorkout({
@@ -234,7 +221,7 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
       beepsCounted: new Set(),
     };
     if (!isMuted) {
-      audioManager.speak(`Restarting ${currentInterval.name}`);
+      audioManager.speakInterval(currentInterval);
     }
   };
 
