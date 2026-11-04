@@ -48,6 +48,11 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
   const nextInterval = workout.intervals[currentIdx + 1] || null;
   const currentPhaseConfig = PHASE_CONFIG[currentInterval.phase] || PHASE_CONFIG.run;
 
+  // Total workout duration & halfway milestone target
+  const totalWorkoutSeconds = workout.intervals.reduce((acc, curr) => acc + curr.duration, 0);
+  const workoutHalfwayTarget = Math.floor(totalWorkoutSeconds / 2);
+  const workoutHalfwayAnnouncedRef = useRef(false);
+
   // Total workout remaining time calculation
   const futureIntervalsSeconds = workout.intervals
     .slice(currentIdx + 1)
@@ -142,18 +147,19 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
         const remaining = computedRemaining;
         const muted = isMutedRef.current;
 
-        // Halfway cue check (only for intervals >= 90s)
-        const halfwayPoint = Math.floor(currentBlockTotal / 2);
+        // Workout Total Halfway Milestone Cue (with safe de-confliction)
+        const totalElapsed = statsRef.current.totalTime;
         if (
           !muted &&
-          audioManager.halfwayCueEnabled &&
-          currentBlockTotal >= 90 &&
-          remaining <= halfwayPoint &&
-          remaining >= halfwayPoint - 2 &&
-          !cueStateRef.current.announcedHalfway
+          audioManager.workoutHalfwayEnabled &&
+          totalElapsed >= workoutHalfwayTarget &&
+          !workoutHalfwayAnnouncedRef.current &&
+          !audioManager.isAudioBusy() &&
+          remaining > 12 && // Don't interrupt upcoming 10s warning or countdown
+          remaining < currentBlockTotal - 4 // Don't interrupt block start announcement
         ) {
-          cueStateRef.current.announcedHalfway = true;
-          audioManager.speakHalfway();
+          workoutHalfwayAnnouncedRef.current = true;
+          audioManager.speakWorkoutHalfway();
         }
 
         // 10-Second Warning Cue

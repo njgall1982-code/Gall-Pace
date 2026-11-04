@@ -57,7 +57,7 @@ class AudioManager {
     this.chimeEnabled = true;
     this.tenSecondWarningEnabled = true;
     this.countdownEnabled = true;
-    this.halfwayCueEnabled = true;
+    this.workoutHalfwayEnabled = true;
     this.silentStart = false;
 
     this.audioCtx = null;
@@ -247,7 +247,7 @@ class AudioManager {
       'walk_1m', 'walk_90s', 'walk_30s', 'walk',
       'run_40', 'run_45', 'run_50', 'run_60', 'run_75', 'run_80', 'run_85', 'run_90', 'run_95', 'run_100',
       'warn_run', 'warn_walk', 'warn_sprint', 'warn_cooldown',
-      'halfway', 'complete', 'cooldown_3m', 'cooldown_2m'
+      'workout_halfway', 'complete', 'cooldown_3m', 'cooldown_2m'
     ];
     common.forEach((clipKey) => {
       this.loadClipBuffer(voiceId, clipKey);
@@ -463,6 +463,10 @@ class AudioManager {
     }
   }
 
+  isAudioBusy() {
+    return this.activeSource !== null;
+  }
+
   speakInterval(interval) {
     const clipKey = this.getClipKeyForInterval(interval);
     this.playClip(clipKey, { withChime: true });
@@ -475,8 +479,8 @@ class AudioManager {
     }
   }
 
-  speakHalfway() {
-    this.playClip('halfway', { withChime: false });
+  speakWorkoutHalfway() {
+    this.playClip('workout_halfway', { withChime: true });
   }
 
   speakComplete() {

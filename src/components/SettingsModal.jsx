@@ -23,7 +23,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChanged }) {
     if (key === 'chimeEnabled') audioManager.chimeEnabled = value;
     if (key === 'tenSecondWarning') audioManager.tenSecondWarningEnabled = value;
     if (key === 'countdownBeeps') audioManager.countdownEnabled = value;
-    if (key === 'halfwayCues') audioManager.halfwayCueEnabled = value;
+    if (key === 'workoutHalfway') audioManager.workoutHalfwayEnabled = value;
     if (key === 'silentStart') audioManager.silentStart = value;
     if (key === 'speechRate') audioManager.speechRate = value;
     if (key === 'speechVolume') audioManager.speechVolume = value;
@@ -254,18 +254,18 @@ export function SettingsModal({ isOpen, onClose, onSettingsChanged }) {
               />
             </label>
 
-            {/* Halfway cues */}
+            {/* Workout Halfway Milestone */}
             <label className="flex items-center justify-between p-3 rounded-xl bg-slate-950/70 border border-slate-800/80 cursor-pointer hover:bg-slate-950 transition-colors">
               <div className="space-y-0.5 pr-2">
-                <span className="text-xs font-bold text-slate-200 block">Halfway Milestone Cue</span>
+                <span className="text-xs font-bold text-slate-200 block">Workout Halfway Milestone</span>
                 <span className="text-[11px] text-slate-400 block">
-                  Spoken encouragement halfway through long intervals.
+                  "Halfway point of your workout! Keep it up." (Announced at the total time halfway mark).
                 </span>
               </div>
               <input
                 type="checkbox"
-                checked={settings.halfwayCues ?? true}
-                onChange={(e) => handleChange('halfwayCues', e.target.checked)}
+                checked={settings.workoutHalfway ?? true}
+                onChange={(e) => handleChange('workoutHalfway', e.target.checked)}
                 className="w-5 h-5 accent-emerald-500 cursor-pointer"
               />
             </label>
