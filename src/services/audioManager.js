@@ -43,6 +43,58 @@ export const STUDIO_VOICES = [
   },
 ];
 
+const DURATION_TAGS = {
+  15: '15s',
+  30: '30s',
+  45: '45s',
+  60: '1m',
+  75: '75s',
+  90: '90s',
+  105: '105s',
+  120: '2m',
+  150: '2m30s',
+  180: '3m',
+  240: '4m',
+  300: '5m',
+};
+
+const DEDICATED_CLIPS = new Set([
+  'test', 'workout_halfway', 'complete',
+  'warmup_1m', 'warmup_2m', 'warmup_3m', 'warmup_5m', 'warmup',
+  'cooldown_1m', 'cooldown_2m', 'cooldown_3m', 'cooldown_5m', 'cooldown',
+  'walk_30s', 'walk_45s', 'walk_1m', 'walk_90s', 'walk_2m', 'walk_3m', 'walk',
+  'run_30_1m', 'run_30_2m',
+  'run_40_1m', 'run_40_2m',
+  'run_45_1m', 'run_45_90s',
+  'run_50_1m', 'run_50_2m',
+  'run_55_1m', 'run_55_2m',
+  'run_60_30s', 'run_60_1m', 'run_60_2m', 'run_60_3m', 'run_60_4m',
+  'run_65_1m', 'run_65_2m',
+  'run_70_1m', 'run_70_2m',
+  'run_75_30s', 'run_75_1m', 'run_75_2m',
+  'run_80_1m', 'run_80_2m', 'run_80_3m',
+  'run_85_30s', 'run_85_1m', 'run_85_2m',
+  'run_90_30s', 'run_90_1m',
+  'run_30', 'run_35', 'run_40', 'run_45', 'run_50', 'run_55', 'run_60',
+  'run_65', 'run_70', 'run_75', 'run_80', 'run_85', 'run_90', 'run_95', 'run_100',
+  'sprint_75_30s',
+  'sprint_80_30s',
+  'sprint_85_30s',
+  'sprint_90_30s', 'sprint_90_45s',
+  'sprint_95_30s', 'sprint_95_45s', 'sprint_95_1m',
+  'sprint_100_30s', 'sprint_100_1m',
+  'act_warmup', 'act_cooldown', 'act_walk',
+  'act_run_30', 'act_run_35', 'act_run_40', 'act_run_45', 'act_run_50',
+  'act_run_55', 'act_run_60', 'act_run_65', 'act_run_70', 'act_run_75',
+  'act_run_80', 'act_run_85', 'act_run_90', 'act_sprint_95', 'act_sprint_100',
+  'for_15s', 'for_30s', 'for_45s', 'for_1m', 'for_75s', 'for_90s', 'for_105s',
+  'for_2m', 'for_2m30s', 'for_3m', 'for_4m', 'for_5m',
+  'warn_run_30s', 'warn_run_1m', 'warn_run_2m', 'warn_run_3m', 'warn_run',
+  'warn_sprint_30s', 'warn_sprint_45s', 'warn_sprint_1m', 'warn_sprint',
+  'warn_walk_30s', 'warn_walk_1m', 'warn_walk_90s', 'warn_walk_2m', 'warn_walk',
+  'warn_cooldown',
+]);
+
 class AudioManager {
   constructor() {
     this.voices = STUDIO_VOICES;
@@ -62,6 +114,7 @@ class AudioManager {
 
     this.audioCtx = null;
     this.activeSource = null;
+    this.activeSources = [];
     this.bufferCache = new Map(); // key: `${voiceId}/${clipKey}` -> AudioBuffer
     this.rawMp3Cache = new Map(); // key: `${voiceId}/${clipKey}` -> ArrayBuffer (survives AudioContext recreation)
     this.isUnlocked = false;
@@ -243,11 +296,18 @@ class AudioManager {
    */
   preloadCommonClips(voiceId = this.selectedVoiceURI) {
     const common = [
-      'test', 'warmup_3m', 'warmup_2m', 'warmup',
-      'walk_1m', 'walk_90s', 'walk_30s', 'walk',
-      'run_40', 'run_45', 'run_50', 'run_60', 'run_75', 'run_80', 'run_85', 'run_90', 'run_95', 'run_100',
-      'warn_run', 'warn_walk', 'warn_sprint', 'warn_cooldown',
-      'workout_halfway', 'complete', 'cooldown_3m', 'cooldown_2m'
+      'test', 'workout_halfway', 'complete',
+      'warmup_3m', 'warmup_2m', 'warmup',
+      'cooldown_3m', 'cooldown_2m', 'cooldown',
+      'walk_1m', 'walk_90s', 'walk_30s', 'walk_45s', 'walk_2m', 'walk',
+      'run_30_1m', 'run_40_1m', 'run_40_2m', 'run_45_1m', 'run_45_90s', 'run_50_1m', 'run_50_2m',
+      'run_60_1m', 'run_60_2m', 'run_60_3m', 'run_70_1m', 'run_75_30s', 'run_75_1m', 'run_80_1m',
+      'run_80_3m', 'run_85_1m', 'run_90_1m',
+      'sprint_75_30s', 'sprint_95_30s', 'sprint_100_30s',
+      'warn_run_1m', 'warn_run_2m', 'warn_run_3m', 'warn_run_30s', 'warn_run',
+      'warn_walk_1m', 'warn_walk_90s', 'warn_walk_30s', 'warn_walk',
+      'warn_sprint_30s', 'warn_sprint_45s', 'warn_sprint_1m', 'warn_sprint',
+      'warn_cooldown'
     ];
     common.forEach((clipKey) => {
       this.loadClipBuffer(voiceId, clipKey);
@@ -260,51 +320,124 @@ class AudioManager {
   preloadWorkoutClips(workout) {
     if (!workout || !workout.intervals) return;
     this.preloadCommonClips(this.selectedVoiceURI);
-    workout.intervals.forEach((interval) => {
-      const key = this.getClipKeyForInterval(interval);
-      if (key) this.loadClipBuffer(this.selectedVoiceURI, key);
+    workout.intervals.forEach((interval, idx) => {
+      const keys = this.getClipKeysForInterval(interval);
+      keys.forEach((key) => this.loadClipBuffer(this.selectedVoiceURI, key));
+      if (idx < workout.intervals.length - 1) {
+        const warnKey = this.getWarningClipKey(workout.intervals[idx + 1]);
+        if (warnKey) this.loadClipBuffer(this.selectedVoiceURI, warnKey);
+      }
     });
   }
 
   /**
-   * Maps an interval object to the appropriate studio neural MP3 clip key
+   * Maps an interval object to one or more studio neural MP3 clip keys.
+   * Returns exact dedicated clips with duration included, or modular sequence [action, duration].
    */
-  getClipKeyForInterval(interval) {
-    if (!interval) return 'run_60';
+  getClipKeysForInterval(interval) {
+    if (!interval) return ['run_60_1m'];
     const phase = interval.phase || 'run';
     const dur = interval.duration || 60;
+    const durTag = DURATION_TAGS[dur] || null;
 
     if (phase === 'warmup') {
-      if (dur === 180) return 'warmup_3m';
-      if (dur === 120) return 'warmup_2m';
-      return 'warmup';
-    }
-    if (phase === 'cooldown') {
-      if (dur === 180) return 'cooldown_3m';
-      if (dur === 120) return 'cooldown_2m';
-      return 'cooldown';
-    }
-    if (phase === 'walk') {
-      if (dur === 60) return 'walk_1m';
-      if (dur === 90) return 'walk_90s';
-      if (dur === 30) return 'walk_30s';
-      return 'walk';
+      if (durTag && DEDICATED_CLIPS.has(`warmup_${durTag}`)) {
+        return [`warmup_${durTag}`];
+      }
+      if (durTag && DEDICATED_CLIPS.has(`for_${durTag}`)) {
+        return ['act_warmup', `for_${durTag}`];
+      }
+      return ['warmup'];
     }
 
-    const rawEffort = interval.effort || (phase === 'sprint' ? 95 : 60);
+    if (phase === 'cooldown') {
+      if (durTag && DEDICATED_CLIPS.has(`cooldown_${durTag}`)) {
+        return [`cooldown_${durTag}`];
+      }
+      if (durTag && DEDICATED_CLIPS.has(`for_${durTag}`)) {
+        return ['act_cooldown', `for_${durTag}`];
+      }
+      return ['cooldown'];
+    }
+
+    if (phase === 'walk') {
+      if (durTag && DEDICATED_CLIPS.has(`walk_${durTag}`)) {
+        return [`walk_${durTag}`];
+      }
+      if (durTag && DEDICATED_CLIPS.has(`for_${durTag}`)) {
+        return ['act_walk', `for_${durTag}`];
+      }
+      return ['walk'];
+    }
+
+    if (phase === 'sprint') {
+      const rawEffort = interval.effort || 95;
+      const snapped = Math.min(100, Math.max(75, Math.round(rawEffort / 5) * 5));
+      if (durTag && DEDICATED_CLIPS.has(`sprint_${snapped}_${durTag}`)) {
+        return [`sprint_${snapped}_${durTag}`];
+      }
+      if (durTag && DEDICATED_CLIPS.has(`run_${snapped}_${durTag}`)) {
+        return [`run_${snapped}_${durTag}`];
+      }
+      const actKey = snapped >= 95 ? `act_sprint_${snapped}` : (DEDICATED_CLIPS.has(`act_run_${snapped}`) ? `act_run_${snapped}` : 'act_sprint_95');
+      if (durTag && DEDICATED_CLIPS.has(`for_${durTag}`)) {
+        return [actKey, `for_${durTag}`];
+      }
+      return [DEDICATED_CLIPS.has(`run_${snapped}`) ? `run_${snapped}` : 'run_95'];
+    }
+
+    // Default: 'run'
+    const rawEffort = interval.effort || 60;
     const snapped = Math.min(100, Math.max(30, Math.round(rawEffort / 5) * 5));
-    return `run_${snapped}`;
+    if (durTag && DEDICATED_CLIPS.has(`run_${snapped}_${durTag}`)) {
+      return [`run_${snapped}_${durTag}`];
+    }
+    if (snapped >= 95 && durTag && DEDICATED_CLIPS.has(`sprint_${snapped}_${durTag}`)) {
+      return [`sprint_${snapped}_${durTag}`];
+    }
+    const actKey = DEDICATED_CLIPS.has(`act_run_${snapped}`) ? `act_run_${snapped}` : 'act_run_60';
+    if (durTag && DEDICATED_CLIPS.has(`for_${durTag}`)) {
+      return [actKey, `for_${durTag}`];
+    }
+    return [DEDICATED_CLIPS.has(`run_${snapped}`) ? `run_${snapped}` : 'run_60'];
   }
 
   /**
-   * Maps an upcoming interval to its 10-second warning clip key
+   * Backward-compatible helper returning single primary clip key
+   */
+  getClipKeyForInterval(interval) {
+    const keys = this.getClipKeysForInterval(interval);
+    return keys[0] || 'run_60';
+  }
+
+  /**
+   * Maps an upcoming interval to its 10-second warning clip key with duration
    */
   getWarningClipKey(nextInterval) {
     if (!nextInterval) return null;
     const phase = nextInterval.phase || 'run';
-    if (phase === 'walk') return 'warn_walk';
-    if (phase === 'sprint') return 'warn_sprint';
-    if (phase === 'cooldown') return 'warn_cooldown';
+    const dur = nextInterval.duration || 60;
+    const durTag = DURATION_TAGS[dur] || null;
+
+    if (phase === 'walk') {
+      if (durTag && ['30s', '1m', '90s', '2m'].includes(durTag) && DEDICATED_CLIPS.has(`warn_walk_${durTag}`)) {
+        return `warn_walk_${durTag}`;
+      }
+      return 'warn_walk';
+    }
+    if (phase === 'sprint') {
+      if (durTag && ['30s', '45s', '1m'].includes(durTag) && DEDICATED_CLIPS.has(`warn_sprint_${durTag}`)) {
+        return `warn_sprint_${durTag}`;
+      }
+      return 'warn_sprint';
+    }
+    if (phase === 'cooldown') {
+      return 'warn_cooldown';
+    }
+    // run
+    if (durTag && ['30s', '1m', '2m', '3m'].includes(durTag) && DEDICATED_CLIPS.has(`warn_run_${durTag}`)) {
+      return `warn_run_${durTag}`;
+    }
     return 'warn_run';
   }
 
@@ -397,10 +530,16 @@ class AudioManager {
   }
 
   /**
-   * Core playback method: plays a Studio Neural clip via Web Audio API BufferSource
-   * so Pandora/Spotify continues playing uninterrupted in the background!
+   * Core playback method: plays one or more Studio Neural clips sequentially via Web Audio API
+   * BufferSource nodes so Pandora/Spotify continues playing uninterrupted in the background!
    */
-  async playClip(clipKey, { voiceId = this.selectedVoiceURI, withChime = false, onEnd = null } = {}) {
+  async playClips(clipKeys, { voiceId = this.selectedVoiceURI, withChime = false, onEnd = null } = {}) {
+    const keys = Array.isArray(clipKeys) ? clipKeys.filter(Boolean) : [clipKeys].filter(Boolean);
+    if (!keys.length) {
+      if (onEnd) onEnd();
+      return;
+    }
+
     this.configureAudioSession();
     const ctx = await this.ensureRunningContext();
     if (!ctx) {
@@ -409,17 +548,11 @@ class AudioManager {
     }
 
     try {
-      // Stop any currently playing voice clip
-      if (this.activeSource) {
-        try {
-          this.activeSource.stop();
-          this.activeSource.disconnect();
-        } catch (e) {}
-        this.activeSource = null;
-      }
+      this.stopAll();
 
-      const buffer = await this.loadClipBuffer(voiceId, clipKey);
-      if (!buffer) {
+      const buffers = await Promise.all(keys.map((k) => this.loadClipBuffer(voiceId, k)));
+      const validBuffers = buffers.filter(Boolean);
+      if (!validBuffers.length) {
         if (onEnd) onEnd();
         return;
       }
@@ -428,48 +561,63 @@ class AudioManager {
         this.playPreCueChime(ctx);
       }
 
-      const delaySec = (withChime && this.chimeEnabled) ? 0.28 : 0.02;
-      const source = ctx.createBufferSource();
-      const gainNode = ctx.createGain();
+      const initialDelay = (withChime && this.chimeEnabled) ? 0.28 : 0.02;
+      let scheduledTime = ctx.currentTime + initialDelay;
+      this.activeSources = [];
 
-      source.buffer = buffer;
-      source.playbackRate.value = this.speechRate || 1.0;
+      validBuffers.forEach((buffer, idx) => {
+        const source = ctx.createBufferSource();
+        const gainNode = ctx.createGain();
 
-      // Boost voice gain slightly (1.4x) so it cuts cleanly over background music
-      gainNode.gain.value = Math.min(2.0, (this.speechVolume || 1.0) * 1.4);
+        source.buffer = buffer;
+        source.playbackRate.value = this.speechRate || 1.0;
 
-      source.connect(gainNode);
-      gainNode.connect(ctx.destination);
+        // Boost voice gain slightly (1.4x) so it cuts cleanly over background music
+        gainNode.gain.value = Math.min(2.0, (this.speechVolume || 1.0) * 1.4);
 
-      this.activeSource = source;
-      source.onended = () => {
-        if (this.activeSource === source) {
-          this.activeSource = null;
-        }
-        if (this.audioSessionMode === 'transient' && ctx.state === 'running') {
-          setTimeout(() => {
-            if (!this.activeSource) {
-              ctx.suspend().catch(() => {});
+        source.connect(gainNode);
+        gainNode.connect(ctx.destination);
+        this.activeSources.push(source);
+
+        const isLast = idx === validBuffers.length - 1;
+        if (isLast) {
+          source.onended = () => {
+            this.activeSources = [];
+            this.activeSource = null;
+            if (this.audioSessionMode === 'transient' && ctx.state === 'running') {
+              setTimeout(() => {
+                if (!this.activeSource && (!this.activeSources || !this.activeSources.length)) {
+                  ctx.suspend().catch(() => {});
+                }
+              }, 120);
             }
-          }, 120);
+            if (onEnd) onEnd();
+          };
         }
-        if (onEnd) onEnd();
-      };
 
-      source.start(ctx.currentTime + delaySec);
+        source.start(scheduledTime);
+        const effectiveDuration = buffer.duration / (this.speechRate || 1.0);
+        scheduledTime += effectiveDuration + 0.05;
+      });
+
+      this.activeSource = this.activeSources[0] || null;
     } catch (err) {
-      console.warn('Error playing neural clip:', err);
+      console.warn('Error playing neural clips:', err);
       if (onEnd) onEnd();
     }
   }
 
+  playClip(clipKeyOrKeys, options = {}) {
+    return this.playClips(clipKeyOrKeys, options);
+  }
+
   isAudioBusy() {
-    return this.activeSource !== null;
+    return (this.activeSource !== null) || (this.activeSources && this.activeSources.length > 0);
   }
 
   speakInterval(interval) {
-    const clipKey = this.getClipKeyForInterval(interval);
-    this.playClip(clipKey, { withChime: true });
+    const clipKeys = this.getClipKeysForInterval(interval);
+    this.playClips(clipKeys, { withChime: true });
   }
 
   speakWarning(nextInterval) {
@@ -515,6 +663,15 @@ class AudioManager {
   }
 
   stopAll() {
+    if (this.activeSources && this.activeSources.length) {
+      this.activeSources.forEach((src) => {
+        try {
+          src.stop();
+          src.disconnect();
+        } catch (e) {}
+      });
+      this.activeSources = [];
+    }
     if (this.activeSource) {
       try {
         this.activeSource.stop();
