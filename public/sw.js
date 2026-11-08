@@ -1,5 +1,5 @@
 // Increment version to bust previous caches
-const CACHE_NAME = 'intervalcoach-v8';
+const CACHE_NAME = 'intervalcoach-v9';
 
 const STATIC_ASSETS = [
   './manifest.webmanifest',

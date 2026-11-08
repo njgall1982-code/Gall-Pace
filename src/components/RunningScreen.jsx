@@ -235,7 +235,12 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
 
   // Controls Handlers
   const handleTogglePlay = () => {
-    audioManager.unlockAudio();
+    // Resuming (e.g. after a phone call) rebuilds audio; pausing just unlocks
+    if (!isRunning) {
+      audioManager.hardResetAudio();
+    } else {
+      audioManager.unlockAudio();
+    }
     setIsRunning((prev) => !prev);
   };
 
@@ -247,7 +252,8 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
     if (nextMuted) {
       audioManager.stopAll();
     } else {
-      audioManager.unlockAudio();
+      // Drastic refresh: rebuild the audio engine from scratch inside this tap
+      audioManager.hardResetAudio();
       audioManager.speakInterval(currentInterval);
     }
   };

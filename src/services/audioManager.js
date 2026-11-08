@@ -136,6 +136,13 @@ class AudioManager {
       if (this.audioCtx.state !== 'running') {
         this.configureAudioSession();
         this.audioCtx.resume().catch(() => {});
+        // If still not running shortly after, rebuild the context entirely
+        const ctxRef = this.audioCtx;
+        setTimeout(() => {
+          if (this.audioCtx === ctxRef && ctxRef.state !== 'running') {
+            this.hardResetAudio();
+          }
+        }, 600);
       }
     };
 
@@ -207,27 +214,73 @@ class AudioManager {
     let ctx = this.getAudioContext();
     if (!ctx) return null;
 
-    if (ctx.state !== 'running') {
+    // Detect a "zombie" context: reports 'running' but its clock is frozen (happens after phone calls)
+    const wallNow = Date.now();
+    if (
+      ctx.state === 'running' &&
+      this._clockCtx === ctx &&
+      wallNow - this._clockWall > 1500 &&
+      ctx.currentTime <= this._clockTime + 0.01
+    ) {
+      ctx = this.hardResetAudio();
+    }
+
+    if (ctx && ctx.state !== 'running') {
+      let resumed = false;
       try {
         await Promise.race([
           ctx.resume(),
           new Promise((_, reject) => setTimeout(() => reject(new Error('resume timeout')), 400))
         ]);
-      } catch (e) {
-        // Recreate context if iOS wedged the interrupted context
+        resumed = ctx.state === 'running';
+      } catch (e) {}
+      if (!resumed) {
+        ctx = this.hardResetAudio();
         try {
-          await ctx.close();
-        } catch (err) {}
-        const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
-        this.audioCtx = new AudioCtxClass();
-        this.attachStateChangeListener(this.audioCtx);
-        this.bufferCache.clear(); // Re-decode from rawMp3Cache as needed
-        ctx = this.audioCtx;
-        try {
-          await ctx.resume();
+          await Promise.race([ctx.resume(), new Promise((r) => setTimeout(r, 400))]);
         } catch (err) {}
       }
     }
+
+    if (ctx) {
+      this._clockCtx = ctx;
+      this._clockWall = Date.now();
+      this._clockTime = ctx.currentTime;
+    }
+    return ctx;
+  }
+
+  /**
+   * Drastic recovery: throw away the AudioContext completely (never awaiting close(), which can
+   * hang on an interrupted iOS context), build a fresh one, and re-prime it.
+   * Best called from a user tap (mute/unmute, resume) so iOS allows the new context to run.
+   */
+  hardResetAudio() {
+    this.stopAll();
+    const old = this.audioCtx;
+    this.audioCtx = null;
+    if (old) {
+      try { old.onstatechange = null; } catch (e) {}
+      try { old.close().catch(() => {}); } catch (e) {}
+    }
+    this.bufferCache.clear(); // re-decoded from rawMp3Cache for the new context
+    this._clockCtx = null;
+
+    this.configureAudioSession();
+    const ctx = this.getAudioContext();
+    if (!ctx) return null;
+    try {
+      const buffer = ctx.createBuffer(1, 1, 22050);
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      source.start(0);
+    } catch (e) {}
+    this.isUnlocked = true;
+    this._clockCtx = ctx;
+    this._clockWall = Date.now();
+    this._clockTime = ctx.currentTime;
+    this.preloadCommonClips(this.selectedVoiceURI);
     return ctx;
   }
 
