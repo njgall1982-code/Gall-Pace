@@ -1,3 +1,5 @@
+﻿import { generateRun } from '../services/runGenerator.js';
+
 /**
  * Prebuilt Workout Library for IntervalCoach
  * 
@@ -19,9 +21,9 @@ export const DEFAULT_WORKOUTS = [
     level: 'Beginner / Intermediate',
     category: 'Endurance',
     accentColor: 'emerald',
-    tags: ['Popular', 'Aerobic Base', '11.5 Mins'],
+    tags: ['Popular', 'Aerobic Base', '12.5 Mins'],
     intervals: [
-      { id: 'bb-1', phase: 'warmup', name: 'Warm-up Walk', duration: 180, effort: null, cue: 'Starting with a 3 minute warm up walk. Relax your shoulders and find a steady stride.' },
+      { id: 'bb-1', phase: 'warmup', name: 'Warm-up Walk', duration: 120, effort: null, cue: 'Starting with a 2 minute warm up walk. Relax your shoulders and find a steady stride.' },
       { id: 'bb-2', phase: 'walk', name: 'Recovery Walk', duration: 60, effort: null, cue: 'Brisk walk for 1 minute. Prepare for your first light run.' },
       { id: 'bb-3', phase: 'run', name: 'Base Run', duration: 120, effort: 40, cue: 'Run at 40 percent effort for 2 minutes. Easy, conversational pace.' },
       { id: 'bb-4', phase: 'sprint', name: 'Speed Surge', duration: 30, effort: 75, cue: 'Pick it up! Run at 75 percent effort for 30 seconds.' },
@@ -38,9 +40,9 @@ export const DEFAULT_WORKOUTS = [
     level: 'Intermediate',
     category: 'Varied Intervals',
     accentColor: 'indigo',
-    tags: ['Pyramid', 'Lactate Threshold', '18 Mins'],
+    tags: ['Pyramid', 'Lactate Threshold', '18.5 Mins'],
     intervals: [
-      { id: 'pyr-1', phase: 'warmup', name: 'Warm-up Walk', duration: 180, effort: null, cue: 'Starting with a 3 minute warm up walk.' },
+      { id: 'pyr-1', phase: 'warmup', name: 'Warm-up Walk', duration: 120, effort: null, cue: 'Starting with a 2 minute warm up walk.' },
       { id: 'pyr-2', phase: 'run', name: 'Level 1: Easy Run', duration: 60, effort: 40, cue: 'First step: Run at 40 percent effort for 1 minute.' },
       { id: 'pyr-3', phase: 'walk', name: 'Walk Recovery', duration: 60, effort: null, cue: 'Walk for 1 minute. Catch your breath.' },
       { id: 'pyr-4', phase: 'run', name: 'Level 2: Moderate Run', duration: 120, effort: 60, cue: 'Step two: Run at 60 percent effort for 2 minutes.' },
@@ -61,7 +63,7 @@ export const DEFAULT_WORKOUTS = [
     level: 'All Levels',
     category: 'HIIT / Cardio',
     accentColor: 'amber',
-    tags: ['20 Minutes', 'High Calorie', 'Snappy'],
+    tags: ['19 Minutes', 'High Calorie', 'Snappy'],
     intervals: [
       { id: 'qb-1', phase: 'warmup', name: 'Warm-up Walk', duration: 120, effort: null, cue: '2 minute brisk warm up walk. Get your muscles ready.' },
       // 8 rounds of 1m run @ 85% / 1m walk
@@ -91,9 +93,9 @@ export const DEFAULT_WORKOUTS = [
     level: 'Beginner Friendly',
     category: 'Gentle Start',
     accentColor: 'cyan',
-    tags: ['Beginner', 'Low Impact', '20 Mins'],
+    tags: ['Beginner', 'Low Impact', '13.5 Mins'],
     intervals: [
-      { id: 'ctr-1', phase: 'warmup', name: 'Warm-up Walk', duration: 180, effort: null, cue: 'Warm up walk for 3 minutes. Nice easy pace.' },
+      { id: 'ctr-1', phase: 'warmup', name: 'Warm-up Walk', duration: 120, effort: null, cue: 'Warm up walk for 2 minutes. Nice easy pace.' },
       { id: 'ctr-2', phase: 'run', name: 'Gentle Jog 1', duration: 60, effort: 45, cue: 'Jog lightly for 60 seconds. Keep it easy and relaxed.' },
       { id: 'ctr-3', phase: 'walk', name: 'Walk Recovery 1', duration: 90, effort: null, cue: 'Walk for 90 seconds.' },
       { id: 'ctr-4', phase: 'run', name: 'Gentle Jog 2', duration: 60, effort: 45, cue: 'Jog lightly for 60 seconds.' },
@@ -112,9 +114,9 @@ export const DEFAULT_WORKOUTS = [
     level: 'Advanced',
     category: 'Speed & Power',
     accentColor: 'rose',
-    tags: ['Speed', 'Sprint', '12 Mins'],
+    tags: ['Speed', 'Sprint', '8.5 Mins'],
     intervals: [
-      { id: 'sb-1', phase: 'warmup', name: 'Warm-up Walk', duration: 180, effort: null, cue: '3 minute warm up walk. Get muscles primed for explosive sprints.' },
+      { id: 'sb-1', phase: 'warmup', name: 'Warm-up Walk', duration: 120, effort: null, cue: '2 minute warm up walk. Get muscles primed for explosive sprints.' },
       { id: 'sb-2', phase: 'sprint', name: 'Sprint 1', duration: 30, effort: 95, cue: 'Sprint at 95 percent effort for 30 seconds!' },
       { id: 'sb-3', phase: 'walk', name: 'Walk Recovery', duration: 30, effort: null, cue: 'Walk and breathe for 30 seconds.' },
       { id: 'sb-4', phase: 'sprint', name: 'Sprint 2', duration: 30, effort: 95, cue: 'Sprint 2! 30 seconds explosive speed!' },
@@ -207,4 +209,67 @@ export function formatTimeHuman(seconds) {
   if (secs === 0) return `${mins}m`;
   return `${mins}m ${secs}s`;
 }
+
+
+/**
+ * Derived stats used by library filters/sorting (no hand-maintained tags needed).
+ * runPct = share of the main block (warm-up/cooldown excluded) spent running/sprinting.
+ */
+export function computeStats(workout) {
+  const ivs = workout?.intervals || [];
+  const isRun = (i) => i.phase === 'run' || i.phase === 'sprint';
+  const main = ivs.filter((i) => i.phase !== 'warmup' && i.phase !== 'cooldown');
+  const mainSec = main.reduce((s, i) => s + i.duration, 0);
+  const runSec = main.filter(isRun).reduce((s, i) => s + i.duration, 0);
+  const totalSec = getWorkoutDuration(workout);
+  return {
+    totalSec,
+    totalMin: totalSec / 60,
+    runPct: mainSec ? Math.round((runSec / mainSec) * 100) : 0,
+    longestRun: Math.max(0, ...ivs.filter(isRun).map((i) => i.duration)),
+    intervalCount: ivs.length,
+  };
+}
+
+/**
+ * Longer prebuilt runs. Built once with the Quick Run generator using fixed seeds, so
+ * they are stable "prebuilt" workouts (same every launch) rather than random each time.
+ */
+function prebuilt({ id, title, subtitle, description, totalMin, runPct, seed }) {
+  const g = generateRun({ totalMin, runPct, seed });
+  return {
+    id,
+    title,
+    subtitle,
+    description,
+    level: 'Intermediate',
+    category: 'Endurance',
+    accentColor: 'emerald',
+    tags: ['Longer Run', `${totalMin} Mins`, `${g.stats.achievedRunPct}% Run`],
+    intervals: g.intervals,
+  };
+}
+
+DEFAULT_WORKOUTS.push(
+  prebuilt({
+    id: 'steady-mix-30',
+    title: '30-Min Steady Mix',
+    subtitle: 'Run-leaning 30 minute run/walk',
+    description: 'About 65% running with short recoveries. Runs build toward the middle and ease off at the end.',
+    totalMin: 30,
+    runPct: 65,
+    seed: 3065,
+  }),
+  prebuilt({
+    id: 'endurance-mix-45',
+    title: '45-Min Endurance Mix',
+    subtitle: 'Balanced 45 minute run/walk',
+    description: 'About 55% running across 45 minutes, with the longest runs through the middle of the workout.',
+    totalMin: 45,
+    runPct: 55,
+    seed: 4555,
+  }),
+);
+
+
 

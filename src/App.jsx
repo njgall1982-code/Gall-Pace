@@ -1,11 +1,12 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { Header } from './components/Header';
 import { WorkoutCard } from './components/WorkoutCard';
 import { RunningScreen } from './components/RunningScreen';
 import { QuickEditModal } from './components/QuickEditModal';
+import { QuickRunCard } from './components/QuickRunCard';
 import { SettingsModal } from './components/SettingsModal';
 import { WorkoutCompleteModal } from './components/WorkoutCompleteModal';
-import { DEFAULT_WORKOUTS } from './data/defaultWorkouts';
+import { DEFAULT_WORKOUTS, computeStats } from './data/defaultWorkouts';
 import { storageService } from './services/storage';
 import { audioManager, STUDIO_VOICES } from './services/audioManager';
 import { Plus, Download, X, HelpCircle } from 'lucide-react';
@@ -17,6 +18,9 @@ export function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [customWorkouts, setCustomWorkouts] = useState([]);
   const [selectedFilter, setSelectedFilter] = useState('All');
+  const [lengthFilter, setLengthFilter] = useState('Any');
+  const [runFilter, setRunFilter] = useState('Any');
+  const [sortBy, setSortBy] = useState('Default');
   const [installPrompt, setInstallPrompt] = useState(null);
   const [isInstalled, setIsInstalled] = useState(false);
   const [showIntroGuide, setShowIntroGuide] = useState(() => {
@@ -120,16 +124,64 @@ export function App() {
   // Combine default and custom workouts
   const allWorkouts = [...customWorkouts, ...DEFAULT_WORKOUTS];
 
-  // Filtering
-  const filteredWorkouts = allWorkouts.filter((w) => {
-    if (selectedFilter === 'All') return true;
-    if (selectedFilter === 'Custom') return w.isCustom;
-    if (selectedFilter === 'Endurance') return w.category === 'Endurance' || w.category === 'Varied Intervals';
-    if (selectedFilter === 'HIIT') return w.category === 'HIIT / Cardio' || w.category === 'Speed & Power';
-    if (selectedFilter === 'Beginner') return w.category === 'Gentle Start' || w.level?.includes('Beginner');
+  // Filtering (style + length + run %), all derived from each workout's intervals
+  const matchesLength = (min) => {
+    if (lengthFilter === 'Under 20') return min < 20;
+    if (lengthFilter === '20–30') return min >= 20 && min <= 30;
+    if (lengthFilter === '30–45') return min > 30 && min <= 45;
+    if (lengthFilter === '45+') return min > 45;
     return true;
-  });
+  };
+  const matchesRun = (pct) => {
+    if (runFilter === 'Walk-heavy') return pct < 40;
+    if (runFilter === 'Balanced') return pct >= 40 && pct <= 65;
+    if (runFilter === 'Run-heavy') return pct > 65;
+    return true;
+  };
 
+  const filteredWorkouts = allWorkouts
+    .filter((w) => {
+      const s = computeStats(w);
+      if (!matchesLength(s.totalMin) || !matchesRun(s.runPct)) return false;
+      if (selectedFilter === 'All') return true;
+      if (selectedFilter === 'Custom') return w.isCustom;
+      if (selectedFilter === 'Endurance') return w.category === 'Endurance' || w.category === 'Varied Intervals';
+      if (selectedFilter === 'HIIT') return w.category === 'HIIT / Cardio' || w.category === 'Speed & Power';
+      if (selectedFilter === 'Beginner') return w.category === 'Gentle Start' || w.level?.includes('Beginner');
+      return true;
+    })
+    .sort((a, b) => {
+      if (sortBy === 'Shortest') return computeStats(a).totalSec - computeStats(b).totalSec;
+      if (sortBy === 'Longest') return computeStats(b).totalSec - computeStats(a).totalSec;
+      if (sortBy === 'Most running') return computeStats(b).runPct - computeStats(a).runPct;
+      return 0;
+    });
+
+  const hasActiveFilters = selectedFilter !== 'All' || lengthFilter !== 'Any' || runFilter !== 'Any';
+  const clearFilters = () => {
+    setSelectedFilter('All');
+    setLengthFilter('Any');
+    setRunFilter('Any');
+  };
+
+  const renderPills = (label, options, value, setValue) => (
+    <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+      <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 w-14 shrink-0">{label}</span>
+      {options.map((opt) => (
+        <button
+          key={opt}
+          onClick={() => setValue(opt)}
+          className={`text-xs font-bold px-3 py-1.5 rounded-full transition-all shrink-0 ${
+            value === opt
+              ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
+              : 'bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-800'
+          }`}
+        >
+          {opt}
+        </button>
+      ))}
+    </div>
+  );
   // If in active workout mode, render RunningScreen full-bleed
   if (activeWorkout) {
     return (
@@ -209,6 +261,9 @@ export function App() {
           </div>
         )}
 
+        {/* Quick Run generator */}
+        <QuickRunCard onStart={handleStartWorkout} onSave={handleSaveCustomWorkout} />
+
         {/* Workout Library Header & Filters */}
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-3">
@@ -232,26 +287,36 @@ export function App() {
           </div>
 
           {/* Filter Pills */}
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
-            {['All', 'Endurance', 'HIIT', 'Beginner', 'Custom'].map((filter) => {
-              const active = selectedFilter === filter;
-              return (
-                <button
-                  key={filter}
-                  onClick={() => setSelectedFilter(filter)}
-                  className={`text-xs font-bold px-3.5 py-1.5 rounded-full transition-all shrink-0 ${
-                    active
-                      ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
-                      : 'bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-800'
-                  }`}
-                >
-                  {filter}
+          {renderPills('Style', ['All', 'Endurance', 'HIIT', 'Beginner', 'Custom'], selectedFilter, setSelectedFilter)}
+          {renderPills('Length', ['Any', 'Under 20', '20–30', '30–45', '45+'], lengthFilter, setLengthFilter)}
+          {renderPills('Run %', ['Any', 'Walk-heavy', 'Balanced', 'Run-heavy'], runFilter, setRunFilter)}
+          <div className="flex items-center justify-between gap-2 text-xs text-slate-400">
+            <span>
+              {filteredWorkouts.length} workout{filteredWorkouts.length === 1 ? '' : 's'}
+              {hasActiveFilters && (
+                <button onClick={clearFilters} className="ml-2 font-bold text-emerald-400 hover:text-emerald-300">
+                  Clear filters
                 </button>
-              );
-            })}
+              )}
+            </span>
+            <label className="flex items-center gap-1.5">
+              Sort
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+                className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-slate-200 text-xs font-bold"
+              >
+                {['Default', 'Shortest', 'Longest', 'Most running'].map((o) => (
+                  <option key={o} value={o}>{o}</option>
+                ))}
+              </select>
+            </label>
           </div>
         </div>
 
+        {filteredWorkouts.length === 0 && (
+          <p className="text-center text-sm text-slate-400 py-6">No workouts match those filters.</p>
+        )}
         {/* High-Contrast Card Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pb-8">
           {filteredWorkouts.map((workout) => (
@@ -301,3 +366,4 @@ export function App() {
 }
 
 export default App;
+
