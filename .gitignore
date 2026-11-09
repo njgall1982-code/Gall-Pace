@@ -31,3 +31,11 @@ desktop.ini
 *.njsproj
 *.sln
 *.sw?
+
+# iOS / Xcode build artifacts
+ios/App/build/
+ios/App/DerivedData/
+ios/App/.build/
+*.xcuserstate
+xcuserdata/
+
