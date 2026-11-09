@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Header } from './components/Header';
 import { WorkoutCard } from './components/WorkoutCard';
 import { RunningScreen } from './components/RunningScreen';
@@ -43,7 +43,8 @@ export function App() {
       if (settings.speechRate) audioManager.speechRate = settings.speechRate;
       if (settings.speechVolume) audioManager.speechVolume = settings.speechVolume;
       if (settings.audioSessionMode) {
-        audioManager.audioSessionMode = settings.audioSessionMode;
+        const mode = settings.audioSessionMode === 'ambient' ? 'playback' : settings.audioSessionMode;
+        audioManager.audioSessionMode = mode;
         audioManager.configureAudioSession();
       }
       if (settings.selectedVoiceURI && STUDIO_VOICES.some(v => v.id === settings.selectedVoiceURI)) {

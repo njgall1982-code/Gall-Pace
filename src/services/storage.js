@@ -61,7 +61,7 @@ export const storageService = {
         speechPitch: 1.0,
         speechVolume: 1.0,
         selectedVoiceURI: 'us-andrew',
-        audioSessionMode: 'ambient',
+        audioSessionMode: 'playback',
         hapticVibration: true,
       };
       return data ? { ...defaults, ...JSON.parse(data) } : defaults;

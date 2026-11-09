@@ -8,12 +8,14 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        // Enable background audio playback and allow mixing/ducking over external music (Spotify, Pandora, etc.)
-        do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers, .duckOthers])
-            try AVAudioSession.sharedInstance().setActive(true)
-        } catch {
-            print("AudioSession setup warning: \(error)")
+        // Configure audio category on a background queue to avoid main-thread hang risk
+        // and allow WKWebView to play audio mixed over Spotify/Pandora.
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            } catch {
+                print("AudioSession setup warning: \(error)")
+            }
         }
         return true
     }

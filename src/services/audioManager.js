@@ -115,9 +115,11 @@ class AudioManager {
     this.audioCtx = null;
     this.activeSource = null;
     this.activeSources = [];
+    this.activeHtmlAudio = null;
     this.bufferCache = new Map(); // key: `${voiceId}/${clipKey}` -> AudioBuffer
     this.rawMp3Cache = new Map(); // key: `${voiceId}/${clipKey}` -> ArrayBuffer (survives AudioContext recreation)
     this.isUnlocked = false;
+    this._appliedSessionMode = null;
 
     this.configureAudioSession();
     this.setupLifecycleRecovery();
@@ -132,17 +134,8 @@ class AudioManager {
 
     const recoverAudio = () => {
       if (!this.audioCtx) return;
-      // On iOS WebKit, locking the screen puts audioCtx into 'interrupted' or 'suspended'
       if (this.audioCtx.state !== 'running') {
-        this.configureAudioSession();
         this.audioCtx.resume().catch(() => {});
-        // If still not running shortly after, rebuild the context entirely
-        const ctxRef = this.audioCtx;
-        setTimeout(() => {
-          if (this.audioCtx === ctxRef && ctxRef.state !== 'running') {
-            this.hardResetAudio();
-          }
-        }, 600);
       }
     };
 
@@ -159,32 +152,32 @@ class AudioManager {
   }
 
   /**
-   * Sets iOS 16.4+ navigator.audioSession.type
-   * 'playback' maps to AVAudioSessionCategoryPlayback (audible even in Silent/Mute mode!)
+   * Sets iOS 16.4+ navigator.audioSession.type only in browser mode and only when changed.
+   * Inside native Capacitor iOS, AppDelegate.swift configures AVAudioSession natively with .mixWithOthers.
    */
   configureAudioSession() {
+    if (typeof window !== 'undefined' && window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()) {
+      return;
+    }
     if (typeof navigator !== 'undefined' && 'audioSession' in navigator) {
+      const targetMode = this.audioSessionMode === 'ambient' ? 'playback' : (this.audioSessionMode || 'playback');
+      if (this._appliedSessionMode === targetMode) return;
       try {
-        navigator.audioSession.type = this.audioSessionMode || 'playback';
-      } catch (e) {
-        try {
-          navigator.audioSession.type = 'playback';
-        } catch (err) {}
-      }
+        navigator.audioSession.type = targetMode;
+        this._appliedSessionMode = targetMode;
+      } catch (e) {}
     }
   }
 
   getAudioContext() {
-    this.configureAudioSession();
     const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
     if (!AudioCtxClass) return null;
 
     if (!this.audioCtx || this.audioCtx.state === 'closed') {
       this.audioCtx = new AudioCtxClass();
-      this. attachStateChangeListener(this.audioCtx);
+      this.attachStateChangeListener(this.audioCtx);
     }
 
-    // Check !== 'running' to catch both 'suspended' AND iOS WebKit's 'interrupted' state!
     if (this.audioCtx.state !== 'running') {
       this.audioCtx.resume().catch(() => {});
     }
@@ -194,7 +187,6 @@ class AudioManager {
   attachStateChangeListener(ctx) {
     if (!ctx) return;
     ctx.onstatechange = () => {
-      // If iOS interrupts the context and the page is visible, attempt immediate resume
       if (
         (ctx.state === 'interrupted' || ctx.state === 'suspended') &&
         typeof document !== 'undefined' &&
@@ -207,39 +199,19 @@ class AudioManager {
   }
 
   /**
-   * Ensure the AudioContext is running; if iOS permanently wedged it after screen lock,
-   * recreate a fresh AudioContext cleanly.
+   * Ensure the AudioContext is running without prematurely destroying it.
    */
   async ensureRunningContext() {
     let ctx = this.getAudioContext();
     if (!ctx) return null;
 
-    // Detect a "zombie" context: reports 'running' but its clock is frozen (happens after phone calls)
-    const wallNow = Date.now();
-    if (
-      ctx.state === 'running' &&
-      this._clockCtx === ctx &&
-      wallNow - this._clockWall > 1500 &&
-      ctx.currentTime <= this._clockTime + 0.01
-    ) {
-      ctx = this.hardResetAudio();
-    }
-
-    if (ctx && ctx.state !== 'running') {
-      let resumed = false;
+    if (ctx.state !== 'running') {
       try {
         await Promise.race([
           ctx.resume(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('resume timeout')), 400))
+          new Promise((resolve) => setTimeout(resolve, 600))
         ]);
-        resumed = ctx.state === 'running';
       } catch (e) {}
-      if (!resumed) {
-        ctx = this.hardResetAudio();
-        try {
-          await Promise.race([ctx.resume(), new Promise((r) => setTimeout(r, 400))]);
-        } catch (err) {}
-      }
     }
 
     if (ctx) {
@@ -251,9 +223,7 @@ class AudioManager {
   }
 
   /**
-   * Drastic recovery: throw away the AudioContext completely (never awaiting close(), which can
-   * hang on an interrupted iOS context), build a fresh one, and re-prime it.
-   * Best called from a user tap (mute/unmute, resume) so iOS allows the new context to run.
+   * Drastic recovery: only called manually when user explicitly toggles mute/unmute
    */
   hardResetAudio() {
     this.stopAll();
@@ -263,10 +233,9 @@ class AudioManager {
       try { old.onstatechange = null; } catch (e) {}
       try { old.close().catch(() => {}); } catch (e) {}
     }
-    this.bufferCache.clear(); // re-decoded from rawMp3Cache for the new context
+    this.bufferCache.clear();
     this._clockCtx = null;
 
-    this.configureAudioSession();
     const ctx = this.getAudioContext();
     if (!ctx) return null;
     try {
@@ -280,23 +249,21 @@ class AudioManager {
     this._clockCtx = ctx;
     this._clockWall = Date.now();
     this._clockTime = ctx.currentTime;
-    this.preloadCommonClips(this.selectedVoiceURI);
     return ctx;
   }
 
   /**
    * Must be called inside a user click/tap gesture (e.g., Start Run or Test Audio)
-   * Unlocks Web Audio API on iOS without interrupting Pandora.
+   * Unlocks Web Audio API on iOS without flooding the decode queue.
    */
   unlockAudio() {
-    this.configureAudioSession();
     try {
       const ctx = this.getAudioContext();
       if (ctx) {
         if (ctx.state !== 'running') {
           ctx.resume().catch(() => {});
         }
-        // Play a 1-sample silent buffer to unlock iOS Web Audio pipeline
+        // Play a 1-sample silent buffer to unlock iOS Web Audio pipeline synchronously
         const buffer = ctx.createBuffer(1, 1, 22050);
         const source = ctx.createBufferSource();
         source.buffer = buffer;
@@ -304,12 +271,39 @@ class AudioManager {
         source.start(0);
       }
       this.isUnlocked = true;
-      this.preloadCommonClips(this.selectedVoiceURI);
       return true;
     } catch (e) {
       console.warn('Audio unlock warning:', e);
       return false;
     }
+  }
+
+  /**
+   * Fetch raw MP3 bytes into memory cache without blocking AudioContext decode queue
+   */
+  async fetchClipRaw(voiceId, clipKey) {
+    const validVoice = STUDIO_VOICES.some(v => v.id === voiceId) ? voiceId : 'us-andrew';
+    const cacheKey = `${validVoice}/${clipKey}`;
+    if (this.rawMp3Cache.has(cacheKey)) {
+      return this.rawMp3Cache.get(cacheKey);
+    }
+
+    const candidateUrls = [
+      `./voices/${validVoice}/${clipKey}.mp3`,
+      `voices/${validVoice}/${clipKey}.mp3`,
+      `/voices/${validVoice}/${clipKey}.mp3`,
+    ];
+    for (const url of candidateUrls) {
+      try {
+        const res = await fetch(url);
+        if (res && res.ok) {
+          const rawBuffer = await res.arrayBuffer();
+          this.rawMp3Cache.set(cacheKey, rawBuffer);
+          return rawBuffer;
+        }
+      } catch (e) {}
+    }
+    throw new Error(`HTTP fetch failed for ${cacheKey}`);
   }
 
   /**
@@ -326,27 +320,7 @@ class AudioManager {
     if (!ctx) return null;
 
     try {
-      let rawBuffer = this.rawMp3Cache.get(cacheKey);
-      if (!rawBuffer) {
-        let response = null;
-        const candidateUrls = [
-          `./voices/${validVoice}/${clipKey}.mp3`,
-          `voices/${validVoice}/${clipKey}.mp3`,
-          `/voices/${validVoice}/${clipKey}.mp3`,
-        ];
-        for (const url of candidateUrls) {
-          try {
-            const res = await fetch(url);
-            if (res && res.ok) {
-              response = res;
-              break;
-            }
-          } catch (e) {}
-        }
-        if (!response) throw new Error(`HTTP fetch failed for ${cacheKey}`);
-        rawBuffer = await response.arrayBuffer();
-        this.rawMp3Cache.set(cacheKey, rawBuffer);
-      }
+      const rawBuffer = await this.fetchClipRaw(validVoice, clipKey);
       // Clone rawBuffer before decodeAudioData because decodeAudioData detaches the buffer
       const bufferCopy = rawBuffer.slice(0);
       const audioBuffer = await ctx.decodeAudioData(bufferCopy);
@@ -359,41 +333,31 @@ class AudioManager {
   }
 
   /**
-   * Preload common clips for a voice so playback during a run is 0ms instant and offline-safe
+   * Preload raw MP3 bytes for common clips in the background without choking AudioContext
    */
   preloadCommonClips(voiceId = this.selectedVoiceURI) {
-    const common = [
-      'test', 'workout_halfway', 'complete',
-      'warmup_3m', 'warmup_2m', 'warmup',
-      'cooldown_3m', 'cooldown_2m', 'cooldown',
-      'walk_1m', 'walk_90s', 'walk_30s', 'walk_45s', 'walk_2m', 'walk',
-      'run_30_1m', 'run_40_1m', 'run_40_2m', 'run_45_1m', 'run_45_90s', 'run_50_1m', 'run_50_2m',
-      'run_60_1m', 'run_60_2m', 'run_60_3m', 'run_70_1m', 'run_75_30s', 'run_75_1m', 'run_80_1m',
-      'run_80_3m', 'run_85_1m', 'run_90_1m',
-      'sprint_75_30s', 'sprint_95_30s', 'sprint_100_30s',
-      'warn_run_1m', 'warn_run_2m', 'warn_run_3m', 'warn_run_30s', 'warn_run',
-      'warn_walk_1m', 'warn_walk_90s', 'warn_walk_30s', 'warn_walk',
-      'warn_sprint_30s', 'warn_sprint_45s', 'warn_sprint_1m', 'warn_sprint',
-      'warn_cooldown'
-    ];
+    const common = ['test', 'warmup_2m', 'walk_1m', 'run_60_1m', 'cooldown_2m'];
     common.forEach((clipKey) => {
-      this.loadClipBuffer(voiceId, clipKey);
+      this.fetchClipRaw(voiceId, clipKey).catch(() => {});
     });
   }
 
   /**
-   * Preload all clips needed for a specific workout
+   * Preload raw MP3 clips needed for a specific workout
    */
   preloadWorkoutClips(workout) {
     if (!workout || !workout.intervals) return;
-    this.preloadCommonClips(this.selectedVoiceURI);
+    const keysToFetch = new Set(['workout_halfway', 'complete']);
     workout.intervals.forEach((interval, idx) => {
       const keys = this.getClipKeysForInterval(interval);
-      keys.forEach((key) => this.loadClipBuffer(this.selectedVoiceURI, key));
+      keys.forEach((key) => keysToFetch.add(key));
       if (idx < workout.intervals.length - 1) {
         const warnKey = this.getWarningClipKey(workout.intervals[idx + 1]);
-        if (warnKey) this.loadClipBuffer(this.selectedVoiceURI, warnKey);
+        if (warnKey) keysToFetch.add(warnKey);
       }
+    });
+    keysToFetch.forEach((key) => {
+      this.fetchClipRaw(this.selectedVoiceURI, key).catch(() => {});
     });
   }
 
@@ -600,6 +564,35 @@ class AudioManager {
   }
 
   /**
+   * Fallback player using HTML5 Audio elements if Web Audio Context is suspended/unavailable
+   */
+  async playClipsWithHtmlAudio(keys, { voiceId = this.selectedVoiceURI, onEnd = null } = {}) {
+    const validVoice = STUDIO_VOICES.some(v => v.id === voiceId) ? voiceId : 'us-andrew';
+    for (let i = 0; i < keys.length; i++) {
+      const clipKey = keys[i];
+      await new Promise((resolve) => {
+        const audio = new Audio(`./voices/${validVoice}/${clipKey}.mp3`);
+        audio.playbackRate = this.speechRate || 1.0;
+        audio.volume = Math.min(1.0, this.speechVolume || 1.0);
+        this.activeHtmlAudio = audio;
+        audio.onended = () => {
+          this.activeHtmlAudio = null;
+          resolve();
+        };
+        audio.onerror = () => {
+          this.activeHtmlAudio = null;
+          resolve();
+        };
+        audio.play().catch(() => {
+          this.activeHtmlAudio = null;
+          resolve();
+        });
+      });
+    }
+    if (onEnd) onEnd();
+  }
+
+  /**
    * Core playback method: plays one or more Studio Neural clips sequentially via Web Audio API
    * BufferSource nodes so Pandora/Spotify continues playing uninterrupted in the background!
    */
@@ -610,28 +603,31 @@ class AudioManager {
       return;
     }
 
-    this.configureAudioSession();
+    this.stopAll();
+    const syncCtx = this.getAudioContext();
+    let chimePlayed = false;
+    if (syncCtx && withChime && this.chimeEnabled) {
+      this.playPreCueChime(syncCtx);
+      chimePlayed = true;
+    }
+
     const ctx = await this.ensureRunningContext();
     if (!ctx) {
-      if (onEnd) onEnd();
-      return;
+      return this.playClipsWithHtmlAudio(keys, { voiceId, onEnd });
     }
 
     try {
-      this.stopAll();
-
       const buffers = await Promise.all(keys.map((k) => this.loadClipBuffer(voiceId, k)));
       const validBuffers = buffers.filter(Boolean);
-      if (!validBuffers.length) {
-        if (onEnd) onEnd();
-        return;
+      if (!validBuffers.length || ctx.state !== 'running') {
+        return this.playClipsWithHtmlAudio(keys, { voiceId, onEnd });
       }
 
-      if (withChime && this.chimeEnabled) {
+      if (withChime && this.chimeEnabled && !chimePlayed) {
         this.playPreCueChime(ctx);
       }
 
-      const initialDelay = (withChime && this.chimeEnabled) ? 0.28 : 0.02;
+      const initialDelay = (withChime && this.chimeEnabled) ? 0.25 : 0.02;
       let scheduledTime = ctx.currentTime + initialDelay;
       this.activeSources = [];
 
@@ -654,13 +650,6 @@ class AudioManager {
           source.onended = () => {
             this.activeSources = [];
             this.activeSource = null;
-            if (this.audioSessionMode === 'transient' && ctx.state === 'running') {
-              setTimeout(() => {
-                if (!this.activeSource && (!this.activeSources || !this.activeSources.length)) {
-                  ctx.suspend().catch(() => {});
-                }
-              }, 120);
-            }
             if (onEnd) onEnd();
           };
         }
@@ -673,7 +662,7 @@ class AudioManager {
       this.activeSource = this.activeSources[0] || null;
     } catch (err) {
       console.warn('Error playing neural clips:', err);
-      if (onEnd) onEnd();
+      return this.playClipsWithHtmlAudio(keys, { voiceId, onEnd });
     }
   }
 
@@ -682,7 +671,7 @@ class AudioManager {
   }
 
   isAudioBusy() {
-    return (this.activeSource !== null) || (this.activeSources && this.activeSources.length > 0);
+    return (this.activeSource !== null) || (this.activeSources && this.activeSources.length > 0) || (this.activeHtmlAudio !== null);
   }
 
   speakInterval(interval) {
@@ -748,6 +737,12 @@ class AudioManager {
         this.activeSource.disconnect();
       } catch (e) {}
       this.activeSource = null;
+    }
+    if (this.activeHtmlAudio) {
+      try {
+        this.activeHtmlAudio.pause();
+      } catch (e) {}
+      this.activeHtmlAudio = null;
     }
   }
 }
