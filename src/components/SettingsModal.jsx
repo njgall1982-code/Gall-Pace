@@ -105,19 +105,6 @@ export function SettingsModal({ isOpen, onClose, onSettingsChanged }) {
             <div className="grid grid-cols-2 gap-2 pt-1">
               <button
                 type="button"
-                onClick={() => handleChange('audioSessionMode', 'ambient')}
-                className={`p-2.5 rounded-xl border text-left transition-all ${
-                  (settings.audioSessionMode || 'ambient') === 'ambient'
-                    ? 'bg-emerald-500/20 border-emerald-500 text-white'
-                    : 'bg-slate-950/60 border-slate-800 text-slate-400'
-                }`}
-              >
-                <div className="text-xs font-bold">Mix Over Music (Best)</div>
-                <div className="text-[10px] opacity-80">Never pauses Pandora (Ringer ON)</div>
-              </button>
-
-              <button
-                type="button"
                 onClick={() => handleChange('audioSessionMode', 'transient')}
                 className={`p-2.5 rounded-xl border text-left transition-all ${
                   settings.audioSessionMode === 'transient'
@@ -125,8 +112,21 @@ export function SettingsModal({ isOpen, onClose, onSettingsChanged }) {
                     : 'bg-slate-950/60 border-slate-800 text-slate-400'
                 }`}
               >
-                <div className="text-xs font-bold">Transient Ducking</div>
-                <div className="text-[10px] opacity-80">Ducks volume during speech</div>
+                <div className="text-xs font-bold">Quiet Music Briefly (Duck)</div>
+                <div className="text-[10px] opacity-80">Lowers music while talking, never stops it</div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleChange('audioSessionMode', 'mix')}
+                className={`p-2.5 rounded-xl border text-left transition-all ${
+                  settings.audioSessionMode !== 'transient'
+                    ? 'bg-emerald-500/20 border-emerald-500 text-white'
+                    : 'bg-slate-950/60 border-slate-800 text-slate-400'
+                }`}
+              >
+                <div className="text-xs font-bold">Play Over Music (Full Vol)</div>
+                <div className="text-[10px] opacity-80">Plays voice over music at 100% volume</div>
               </button>
             </div>
           </div>

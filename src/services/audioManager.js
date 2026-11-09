@@ -102,8 +102,8 @@ class AudioManager {
     this.speechRate = 1.0;
     this.speechVolume = 1.0;
 
-    // Audio session mode: 'playback' allows sound even if iPhone Silent Mode switch is on!
-    this.audioSessionMode = 'playback';
+    // Audio session mode: 'transient' ducks Pandora briefly while talking; 'mix' plays over at 100%
+    this.audioSessionMode = 'transient';
 
     // Coaching cue toggles
     this.chimeEnabled = true;
@@ -121,8 +121,47 @@ class AudioManager {
     this.isUnlocked = false;
     this._appliedSessionMode = null;
 
+    // Native iOS bridge tracking
+    this._nativeReqId = 1;
+    this._nativeCallbacks = new Map();
+    this._nativeBusy = false;
+
+    if (typeof window !== 'undefined') {
+      window.__onNativeAudioEnded = (reqId) => {
+        this._nativeBusy = false;
+        const cb = this._nativeCallbacks.get(reqId);
+        if (cb) {
+          this._nativeCallbacks.delete(reqId);
+          cb();
+        }
+      };
+    }
+
     this.configureAudioSession();
     this.setupLifecycleRecovery();
+  }
+
+  /**
+   * Returns true when running inside the native iOS Capacitor app with NativeAudioCoach bridge
+   */
+  isNativeIOS() {
+    return Boolean(
+      typeof window !== 'undefined' &&
+      window.webkit &&
+      window.webkit.messageHandlers &&
+      window.webkit.messageHandlers.nativeAudioCoach
+    );
+  }
+
+  sendNativeMessage(payload) {
+    if (!this.isNativeIOS()) return false;
+    try {
+      window.webkit.messageHandlers.nativeAudioCoach.postMessage(payload);
+      return true;
+    } catch (e) {
+      console.warn('Native audio bridge error:', e);
+      return false;
+    }
   }
 
   /**
@@ -170,6 +209,7 @@ class AudioManager {
   }
 
   getAudioContext() {
+    if (this.isNativeIOS()) return null;
     const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
     if (!AudioCtxClass) return null;
 
@@ -202,6 +242,7 @@ class AudioManager {
    * Ensure the AudioContext is running without prematurely destroying it.
    */
   async ensureRunningContext() {
+    if (this.isNativeIOS()) return null;
     let ctx = this.getAudioContext();
     if (!ctx) return null;
 
@@ -227,6 +268,7 @@ class AudioManager {
    */
   hardResetAudio() {
     this.stopAll();
+    if (this.isNativeIOS()) return null;
     const old = this.audioCtx;
     this.audioCtx = null;
     if (old) {
@@ -257,6 +299,10 @@ class AudioManager {
    * Unlocks Web Audio API on iOS without flooding the decode queue.
    */
   unlockAudio() {
+    if (this.isNativeIOS()) {
+      this.isUnlocked = true;
+      return true;
+    }
     try {
       const ctx = this.getAudioContext();
       if (ctx) {
@@ -336,6 +382,7 @@ class AudioManager {
    * Preload raw MP3 bytes for common clips in the background without choking AudioContext
    */
   preloadCommonClips(voiceId = this.selectedVoiceURI) {
+    if (this.isNativeIOS()) return;
     const common = ['test', 'warmup_2m', 'walk_1m', 'run_60_1m', 'cooldown_2m'];
     common.forEach((clipKey) => {
       this.fetchClipRaw(voiceId, clipKey).catch(() => {});
@@ -346,6 +393,10 @@ class AudioManager {
    * Preload raw MP3 clips needed for a specific workout
    */
   preloadWorkoutClips(workout) {
+    if (this.isNativeIOS()) {
+      this.sendNativeMessage({ action: 'startWorkoutKeepAlive' });
+      return;
+    }
     if (!workout || !workout.intervals) return;
     const keysToFetch = new Set(['workout_halfway', 'complete']);
     workout.intervals.forEach((interval, idx) => {
@@ -359,6 +410,12 @@ class AudioManager {
     keysToFetch.forEach((key) => {
       this.fetchClipRaw(this.selectedVoiceURI, key).catch(() => {});
     });
+  }
+
+  stopWorkoutKeepAlive() {
+    if (this.isNativeIOS()) {
+      this.sendNativeMessage({ action: 'stopWorkoutKeepAlive' });
+    }
   }
 
   /**
@@ -477,6 +534,10 @@ class AudioManager {
    */
   playPreCueChime(ctxOverride = null) {
     if (!this.chimeEnabled) return;
+    if (this.isNativeIOS()) {
+      this.sendNativeMessage({ action: 'playChime' });
+      return;
+    }
     try {
       const ctx = ctxOverride || this.getAudioContext();
       if (!ctx) return;
@@ -519,6 +580,10 @@ class AudioManager {
    */
   async playCountdownBeep(isFinal = false) {
     if (!this.countdownEnabled) return;
+    if (this.isNativeIOS()) {
+      this.sendNativeMessage({ action: 'playBeep', isFinal: Boolean(isFinal) });
+      return;
+    }
     try {
       const ctx = await this.ensureRunningContext();
       if (!ctx) return;
@@ -541,6 +606,10 @@ class AudioManager {
   }
 
   async playCompletionChime() {
+    if (this.isNativeIOS()) {
+      this.sendNativeMessage({ action: 'playCompletionChime' });
+      return;
+    }
     try {
       const ctx = await this.ensureRunningContext();
       if (!ctx) return;
@@ -593,13 +662,34 @@ class AudioManager {
   }
 
   /**
-   * Core playback method: plays one or more Studio Neural clips sequentially via Web Audio API
-   * BufferSource nodes so Pandora/Spotify continues playing uninterrupted in the background!
+   * Core playback method: plays one or more Studio Neural clips sequentially.
+   * On native iOS, routes directly through NativeAudioCoach (AVAudioPlayer + AVAudioSession)
+   * so Pandora/Spotify never pauses and ducks/unducks smoothly!
    */
   async playClips(clipKeys, { voiceId = this.selectedVoiceURI, withChime = false, onEnd = null } = {}) {
     const keys = Array.isArray(clipKeys) ? clipKeys.filter(Boolean) : [clipKeys].filter(Boolean);
     if (!keys.length) {
       if (onEnd) onEnd();
+      return;
+    }
+
+    if (this.isNativeIOS()) {
+      const validVoice = STUDIO_VOICES.some(v => v.id === voiceId) ? voiceId : 'us-andrew';
+      const reqId = this._nativeReqId++;
+      if (onEnd) {
+        this._nativeCallbacks.set(reqId, onEnd);
+      }
+      this._nativeBusy = true;
+      this.sendNativeMessage({
+        action: 'playClips',
+        voiceId: validVoice,
+        clips: keys,
+        withChime: Boolean(withChime && this.chimeEnabled),
+        rate: Number(this.speechRate || 1.0),
+        volume: Number(this.speechVolume || 1.0),
+        sessionMode: this.audioSessionMode === 'transient' ? 'transient' : 'mix',
+        requestId: reqId,
+      });
       return;
     }
 
@@ -671,6 +761,9 @@ class AudioManager {
   }
 
   isAudioBusy() {
+    if (this.isNativeIOS()) {
+      return this._nativeBusy;
+    }
     return (this.activeSource !== null) || (this.activeSources && this.activeSources.length > 0) || (this.activeHtmlAudio !== null);
   }
 
@@ -722,6 +815,11 @@ class AudioManager {
   }
 
   stopAll() {
+    if (this.isNativeIOS()) {
+      this._nativeBusy = false;
+      this.sendNativeMessage({ action: 'stopAll' });
+      return;
+    }
     if (this.activeSources && this.activeSources.length) {
       this.activeSources.forEach((src) => {
         try {

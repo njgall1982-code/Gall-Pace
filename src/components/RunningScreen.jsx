@@ -80,6 +80,7 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
       window.removeEventListener('focus', handleVisibilityOrFocus);
       wakeLockService.release();
       audioManager.stopAll();
+      audioManager.stopWorkoutKeepAlive();
     };
   }, []);
 
