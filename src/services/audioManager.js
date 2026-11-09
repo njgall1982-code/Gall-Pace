@@ -102,8 +102,8 @@ class AudioManager {
     this.speechRate = 1.0;
     this.speechVolume = 1.0;
 
-    // Audio session mode: 'ambient' mixes over Pandora without pausing; 'transient' ducks
-    this.audioSessionMode = 'ambient';
+    // Audio session mode: 'playback' allows sound even if iPhone Silent Mode switch is on!
+    this.audioSessionMode = 'playback';
 
     // Coaching cue toggles
     this.chimeEnabled = true;
@@ -160,15 +160,15 @@ class AudioManager {
 
   /**
    * Sets iOS 16.4+ navigator.audioSession.type
-   * 'ambient' maps to AVAudioSessionCategoryAmbient (mixes with Pandora/Spotify without pausing!)
+   * 'playback' maps to AVAudioSessionCategoryPlayback (audible even in Silent/Mute mode!)
    */
   configureAudioSession() {
     if (typeof navigator !== 'undefined' && 'audioSession' in navigator) {
       try {
-        navigator.audioSession.type = this.audioSessionMode || 'ambient';
+        navigator.audioSession.type = this.audioSessionMode || 'playback';
       } catch (e) {
         try {
-          navigator.audioSession.type = 'ambient';
+          navigator.audioSession.type = 'playback';
         } catch (err) {}
       }
     }
@@ -328,8 +328,22 @@ class AudioManager {
     try {
       let rawBuffer = this.rawMp3Cache.get(cacheKey);
       if (!rawBuffer) {
-        const response = await fetch(`./voices/${validVoice}/${clipKey}.mp3`);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        let response = null;
+        const candidateUrls = [
+          `./voices/${validVoice}/${clipKey}.mp3`,
+          `voices/${validVoice}/${clipKey}.mp3`,
+          `/voices/${validVoice}/${clipKey}.mp3`,
+        ];
+        for (const url of candidateUrls) {
+          try {
+            const res = await fetch(url);
+            if (res && res.ok) {
+              response = res;
+              break;
+            }
+          } catch (e) {}
+        }
+        if (!response) throw new Error(`HTTP fetch failed for ${cacheKey}`);
         rawBuffer = await response.arrayBuffer();
         this.rawMp3Cache.set(cacheKey, rawBuffer);
       }
@@ -502,6 +516,9 @@ class AudioManager {
     try {
       const ctx = ctxOverride || this.getAudioContext();
       if (!ctx) return;
+      if (ctx.state !== 'running') {
+        ctx.resume().catch(() => {});
+      }
 
       const now = ctx.currentTime;
 

@@ -332,7 +332,10 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
       className={`fixed inset-0 h-[100dvh] max-h-[100dvh] overflow-hidden flex flex-col justify-between select-none ${themeBg} transition-colors duration-300`}
     >
       {/* Top Status Bar */}
-      <div className="px-4 pt-3 pb-2.5 border-b border-slate-800/80 bg-slate-950/70 backdrop-blur-md shrink-0">
+      <div
+        className="px-4 pb-2.5 border-b border-slate-800/80 bg-slate-950/70 backdrop-blur-md shrink-0"
+        style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top, 0px))' }}
+      >
         <div className="max-w-md mx-auto flex items-center justify-between gap-2">
           {/* Workout Title & Interval Indicator */}
           <div className="min-w-0">
