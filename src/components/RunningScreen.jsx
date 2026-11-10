@@ -236,13 +236,22 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
 
   // Controls Handlers
   const handleTogglePlay = () => {
-    // Resuming (e.g. after a phone call) rebuilds audio; pausing just unlocks
-    if (!isRunning) {
-      audioManager.hardResetAudio();
-    } else {
+    if (isRunning) {
+      // User tapped Pause: immediately cut off any currently playing audio clip
+      const wasTalking = audioManager.isAudioBusy();
+      audioManager.stopAll();
+      cueStateRef.current.wasInterruptedByPause = wasTalking;
       audioManager.unlockAudio();
+      setIsRunning(false);
+    } else {
+      // User tapped Resume: reset engine and replay the announcement if it got interrupted by pause
+      audioManager.hardResetAudio();
+      if (cueStateRef.current.wasInterruptedByPause && !isMutedRef.current && currentInterval) {
+        cueStateRef.current.wasInterruptedByPause = false;
+        audioManager.speakInterval(currentInterval);
+      }
+      setIsRunning(true);
     }
-    setIsRunning((prev) => !prev);
   };
 
   const handleToggleMute = () => {

@@ -185,21 +185,39 @@ export function SettingsModal({ isOpen, onClose, onSettingsChanged }) {
             </div>
           </div>
 
-          {/* Voice Pacing & Rate */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between text-xs font-semibold">
-              <span className="text-slate-300">Coach Speaking Speed</span>
-              <span className="text-emerald-400 font-mono">{settings.speechRate || 1.0}x</span>
+          {/* Voice Volume & Pacing */}
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs font-semibold">
+                <span className="text-slate-300">Coach Speaking Volume</span>
+                <span className="text-emerald-400 font-mono">{Math.round((settings.speechVolume ?? 1.0) * 100)}%</span>
+              </div>
+              <input
+                type="range"
+                min="0.1"
+                max="1.0"
+                step="0.05"
+                value={settings.speechVolume ?? 1.0}
+                onChange={(e) => handleChange('speechVolume', parseFloat(e.target.value))}
+                className="w-full accent-emerald-500 h-2 bg-slate-800 rounded-lg cursor-pointer"
+              />
             </div>
-            <input
-              type="range"
-              min="0.9"
-              max="1.15"
-              step="0.05"
-              value={settings.speechRate || 1.0}
-              onChange={(e) => handleChange('speechRate', parseFloat(e.target.value))}
-              className="w-full accent-emerald-500 h-2 bg-slate-800 rounded-lg cursor-pointer"
-            />
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs font-semibold">
+                <span className="text-slate-300">Coach Speaking Speed</span>
+                <span className="text-emerald-400 font-mono">{settings.speechRate || 1.0}x</span>
+              </div>
+              <input
+                type="range"
+                min="0.9"
+                max="1.15"
+                step="0.05"
+                value={settings.speechRate || 1.0}
+                onChange={(e) => handleChange('speechRate', parseFloat(e.target.value))}
+                className="w-full accent-emerald-500 h-2 bg-slate-800 rounded-lg cursor-pointer"
+              />
+            </div>
           </div>
 
           {/* Cues Toggles */}
