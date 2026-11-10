@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Quick Run generator for IntervalCoach.
  *
  * A pure, deterministic ("dumb") function: same params + seed => same workout.
@@ -16,6 +16,74 @@ export const WARMUP_SEC = 120;
 export const COOLDOWN_SEC = 120;
 export const RUN_EFFORT = 60;
 export const MAX_RUN_HARD_CAP = 300; // longest voice clip
+
+/**
+ * Calculates a natural effort progression for runs and walks.
+ * - Base effort scales with overall runPct (higher run% = higher pace/fitness).
+ * - Progression curve ramps up: starts conversational, peaks in middle/late.
+ * - Shorter runs encourage faster surges; longer endurance intervals back off slightly.
+ * - Walks distinguish between "Recovery Walk" (after hard/long runs) and "Brisk Walk" (to stay warm).
+ */
+export function calculateEffortArc(runs, walks, runPct, rng) {
+  const n = runs.length;
+  if (!n) return { runEfforts: [], walkNames: [] };
+
+  // Base target effort based on runPct (10% -> 45 effort, 50% -> 60 effort, 90% -> 75 effort)
+  const baseEffort = clamp(Math.round(45 + ((runPct - 10) / 80) * 30), 45, 75);
+
+  // Available effort steps in voice clips: 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95
+  const snapEffort = (val) => clamp(Math.round(val / 5) * 5, 40, 95);
+
+  // Randomize style per shuffle seed:
+  // 0: Classic Ramp (starts easy, steadily climbs to strong finish)
+  // 1: Peak Pyramid (starts easy, peaks in the middle, steady finish)
+  // 2: Interval Surges (alternates steady and push)
+  const styleRoll = rng ? Math.floor(rng() * 3) : 0;
+
+  const runEfforts = runs.map((dur, i) => {
+    const progress = n > 1 ? i / (n - 1) : 0.5; // 0.0 to 1.0 through the run blocks
+    let curveDelta = 0;
+
+    if (styleRoll === 0) {
+      // Classic Ramp: from -10 to +10
+      curveDelta = (progress - 0.4) * 20;
+    } else if (styleRoll === 1) {
+      // Peak Pyramid: peaks in middle (sinusoidal bell curve)
+      curveDelta = Math.sin(progress * Math.PI) * 15 - 5;
+    } else {
+      // Interval Surges: wave with slight upward bias
+      const wave = (i % 2 === 1) ? 10 : -5;
+      curveDelta = wave + (progress * 5);
+    }
+
+    // Duration modifier:
+    // Short runs (<= 45s) can handle a faster surge (+5 to +10%)
+    // Long runs (>= 180s) need a sustainable rhythm (-5 to -10%)
+    let durModifier = 0;
+    if (dur <= 30) durModifier = +10;
+    else if (dur <= 45) durModifier = +5;
+    else if (dur >= 240) durModifier = -10;
+    else if (dur >= 180) durModifier = -5;
+
+    // Small jitter for human realism
+    const jitter = rng ? (rng() - 0.5) * 6 : 0;
+
+    const raw = baseEffort + curveDelta + durModifier + jitter;
+    return snapEffort(raw);
+  });
+
+  // Walk naming & style:
+  // Walks following high effort (>= 75%) or long runs (>= 120s) are "Recovery Walk"
+  // Shorter walks or after mild runs are "Brisk Walk"
+  const walkNames = walks.map((dur, i) => {
+    const precedingRunEffort = runEfforts[i] || 60;
+    const precedingRunDur = runs[i] || 60;
+    const isHard = precedingRunEffort >= 75 || precedingRunDur >= 120;
+    return isHard ? 'Recovery Walk' : 'Brisk Walk';
+  });
+
+  return { runEfforts, walkNames };
+}
 
 const MIN_RUN = 45;          // default shortest run (user-adjustable, floor 15s)
 const MIN_RUN_RELAXED = 30;
@@ -331,6 +399,10 @@ export function generateRun(input = {}) {
   const cueRng = mulberry32(seed ^ 0x9e3779b9);
   const pick = (arr) => arr[Math.floor(cueRng() * arr.length)];
   const id = `gen-${seed}`;
+
+  // Generate dynamic efforts and walk styles
+  const { runEfforts, walkNames } = calculateEffortArc(result.runs, result.walks, params.runPct, cueRng);
+
   const intervals = [
     {
       id: `${id}-warmup`, phase: 'warmup', name: 'Warm-up Walk', duration: WARMUP_SEC, effort: null,
@@ -339,24 +411,36 @@ export function generateRun(input = {}) {
   ];
 
   const runCueFns = [
-    (d) => `Run at ${RUN_EFFORT} percent effort for ${d}.`,
-    (d) => `Time to run. ${d} at ${RUN_EFFORT} percent effort.`,
-    (d) => `Let's go! Run for ${d} at a steady ${RUN_EFFORT} percent effort.`,
+    (d, eff) => `Run at ${eff} percent effort for ${d}.`,
+    (d, eff) => `Time to run. ${d} at ${eff} percent effort.`,
+    (d, eff) => `Let's go! Run for ${d} at ${eff} percent effort.`,
   ];
   const walkCueFns = [
     (d) => `Walk and catch your breath for ${d}.`,
     (d) => `Recovery walk for ${d}.`,
     (d) => `Easy walk for ${d}. Shake it out.`,
+    (d) => `Brisk walk for ${d}. Keep the rhythm going.`,
   ];
 
   result.runs.forEach((dur, i) => {
+    const eff = runEfforts[i] || RUN_EFFORT;
+    const isSprint = eff >= 95;
     intervals.push({
-      id: `${id}-run-${i + 1}`, phase: 'run', name: `Run ${i + 1}`, duration: dur, effort: RUN_EFFORT,
-      cue: pick(runCueFns)(durationWords(dur)),
+      id: `${id}-run-${i + 1}`,
+      phase: isSprint ? 'sprint' : 'run',
+      name: isSprint ? `Sprint ${i + 1}` : `Run ${i + 1}`,
+      duration: dur,
+      effort: eff,
+      cue: pick(runCueFns)(durationWords(dur), eff),
     });
     if (i < result.walks.length) {
+      const walkName = walkNames[i] || 'Recovery Walk';
       intervals.push({
-        id: `${id}-walk-${i + 1}`, phase: 'walk', name: `Recovery Walk ${i + 1}`, duration: result.walks[i], effort: null,
+        id: `${id}-walk-${i + 1}`,
+        phase: 'walk',
+        name: `${walkName} ${i + 1}`,
+        duration: result.walks[i],
+        effort: null,
         cue: pick(walkCueFns)(durationWords(result.walks[i])),
       });
     }

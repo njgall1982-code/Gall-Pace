@@ -13,6 +13,7 @@ const MIN_WALK_CHIPS = [15, 30, 45];
 const PHASE_BAR = {
   warmup: 'bg-amber-500',
   run: 'bg-emerald-500',
+  sprint: 'bg-rose-500',
   walk: 'bg-cyan-500',
   cooldown: 'bg-indigo-500',
 };
@@ -236,8 +237,8 @@ export function QuickRunCard({ onStart, onSave }) {
             <div
               key={iv.id}
               style={{ width: `${(iv.duration / totalSec) * 100}%` }}
-              className={`${PHASE_BAR[iv.phase] || 'bg-slate-600'} ${iv.phase === 'run' ? 'opacity-100' : 'opacity-60'}`}
-              title={`${iv.name} · ${formatClock(iv.duration)}`}
+              className={`${PHASE_BAR[iv.phase] || 'bg-slate-600'} ${iv.phase === 'run' || iv.phase === 'sprint' ? 'opacity-100' : 'opacity-60'}`}
+              title={`${iv.name} (${iv.effort ? `${iv.effort}% effort` : 'recovery'}) · ${formatClock(iv.duration)}`}
             />
           ))}
         </div>
