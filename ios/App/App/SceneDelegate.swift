@@ -142,7 +142,7 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
 
     @objc private func handleAudioInterruption(_ notification: Notification) {
         guard let userInfo = notification.userInfo,
-              let typeRaw = userInfo[AVAudioSession.interruptionTypeKey] as? UInt,
+              let typeRaw = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: typeRaw) else { return }
 
         if type == .ended {
