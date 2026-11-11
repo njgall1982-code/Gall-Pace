@@ -60,15 +60,57 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
   const remainingWorkoutSeconds = Math.max(0, secondsLeft + futureIntervalsSeconds);
 
   // WakeLock & Screen Wake Recovery
+  const finishedHandledRef = useRef(false);
+
   useEffect(() => {
+    const isNative = audioManager.isNativeIOS();
     wakeLockService.request();
     audioManager.unlockAudio();
-    audioManager.preloadWorkoutClips(workout);
+
+    if (isNative) {
+      audioManager.setNativeWorkoutStateListener((state) => {
+        if (!state) return;
+        statsRef.current = {
+          totalTime: state.totalTime ?? 0,
+          runTime: state.runTime ?? 0,
+          walkTime: state.walkTime ?? 0,
+          completedIntervals: state.completedIntervals ?? 0,
+        };
+        if (typeof state.currentIdx === 'number') setCurrentIdx(state.currentIdx);
+        if (typeof state.secondsLeft === 'number') setSecondsLeft(state.secondsLeft);
+        if (typeof state.currentBlockTotal === 'number') setCurrentBlockTotal(state.currentBlockTotal);
+        if (typeof state.isRunning === 'boolean') setIsRunning(state.isRunning);
+
+        if (state.isCompleted && !finishedHandledRef.current) {
+          finishedHandledRef.current = true;
+          setIsPocketLocked(false);
+          storageService.logCompletedWorkout({
+            title: workout.title,
+            totalTime: statsRef.current.totalTime,
+            runTime: statsRef.current.runTime,
+            walkTime: statsRef.current.walkTime,
+            completedIntervals: statsRef.current.completedIntervals,
+          });
+          onFinishWorkout({
+            ...statsRef.current,
+            workoutTitle: workout.title,
+          });
+        }
+      });
+
+      audioManager.startNativeWorkout(workout, { isMuted: isMutedRef.current });
+    } else {
+      audioManager.preloadWorkoutClips(workout);
+    }
 
     const handleVisibilityOrFocus = async () => {
       if (document.visibilityState === 'visible') {
         wakeLockService.request();
-        await audioManager.ensureRunningContext();
+        if (isNative) {
+          audioManager.requestNativeWorkoutState();
+        } else {
+          await audioManager.ensureRunningContext();
+        }
       }
     };
 
@@ -79,8 +121,13 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
       window.removeEventListener('focus', handleVisibilityOrFocus);
       wakeLockService.release();
-      audioManager.stopAll();
-      audioManager.stopWorkoutKeepAlive();
+      if (isNative) {
+        audioManager.setNativeWorkoutStateListener(null);
+        audioManager.stopNativeWorkout();
+      } else {
+        audioManager.stopAll();
+        audioManager.stopWorkoutKeepAlive();
+      }
     };
   }, []);
 
@@ -88,13 +135,15 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
   useEffect(() => {
     if (isRunning) {
       wakeLockService.request();
-      blockEndTimestampRef.current = Date.now() + secondsLeft * 1000;
+      if (!audioManager.isNativeIOS()) {
+        blockEndTimestampRef.current = Date.now() + secondsLeft * 1000;
+      }
     }
   }, [isRunning]);
 
-  // Interval Change initialization
+  // Interval Change initialization (web/PWA mode; native iOS runs in Swift background engine)
   useEffect(() => {
-    if (!currentInterval) return;
+    if (audioManager.isNativeIOS() || !currentInterval) return;
 
     const dur = currentInterval.duration || 60;
     setSecondsLeft(dur);
@@ -128,9 +177,9 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
     }
   }, [currentIdx, workout]);
 
-  // Main Wall-Clock Synced Timer Tick
+  // Main Wall-Clock Synced Timer Tick (web/PWA mode; native iOS runs in Swift background engine)
   useEffect(() => {
-    if (!isRunning) return;
+    if (audioManager.isNativeIOS() || !isRunning) return;
 
     const timer = setInterval(() => {
       const now = Date.now();
@@ -236,6 +285,17 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
 
   // Controls Handlers
   const handleTogglePlay = () => {
+    if (audioManager.isNativeIOS()) {
+      if (isRunning) {
+        audioManager.pauseNativeWorkout();
+        setIsRunning(false);
+      } else {
+        audioManager.resumeNativeWorkout();
+        setIsRunning(true);
+      }
+      return;
+    }
+
     if (isRunning) {
       // User tapped Pause: immediately cut off any currently playing audio clip
       const wasTalking = audioManager.isAudioBusy();
@@ -259,6 +319,11 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
     setIsMuted(nextMuted);
     isMutedRef.current = nextMuted;
 
+    if (audioManager.isNativeIOS()) {
+      audioManager.setNativeWorkoutMuted(nextMuted);
+      return;
+    }
+
     if (nextMuted) {
       audioManager.stopAll();
     } else {
@@ -269,6 +334,10 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
   };
 
   const handleAddThirtySeconds = () => {
+    if (audioManager.isNativeIOS()) {
+      audioManager.addNativeWorkoutSeconds(30);
+      return;
+    }
     audioManager.unlockAudio();
     blockEndTimestampRef.current += 30 * 1000;
     setSecondsLeft((prev) => prev + 30);
@@ -276,6 +345,14 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
   };
 
   const handleSkipNext = () => {
+    if (audioManager.isNativeIOS()) {
+      if (currentIdx < workout.intervals.length - 1) {
+        audioManager.skipNextNativeWorkout();
+      } else {
+        setShowExitConfirm(true);
+      }
+      return;
+    }
     audioManager.unlockAudio();
     if (currentIdx < workout.intervals.length - 1) {
       setCurrentIdx(currentIdx + 1);
@@ -285,6 +362,10 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
   };
 
   const handleSkipPrev = () => {
+    if (audioManager.isNativeIOS()) {
+      audioManager.skipPrevNativeWorkout();
+      return;
+    }
     audioManager.unlockAudio();
     if (secondsLeft < currentBlockTotal - 3) {
       blockEndTimestampRef.current = Date.now() + currentBlockTotal * 1000;
@@ -636,7 +717,11 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
               <button
                 onClick={() => {
                   setShowExitConfirm(false);
-                  audioManager.stopAll();
+                  if (audioManager.isNativeIOS()) {
+                    audioManager.stopNativeWorkout();
+                  } else {
+                    audioManager.stopAll();
+                  }
                   onEndWorkout();
                 }}
                 className="py-3 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs transition-colors"

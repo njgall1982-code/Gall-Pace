@@ -23,6 +23,14 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     func scene(_ scene: UIScene, continue userActivity: NSUserActivity) {
         SceneDelegateProxy.shared.scene(scene, continue: userActivity)
     }
+
+    func sceneWillEnterForeground(_ scene: UIScene) {
+        NativeAudioCoach.shared.handleAppForeground()
+    }
+
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        NativeAudioCoach.shared.handleAppForeground()
+    }
 }
 
 class CoachBridgeViewController: CAPBridgeViewController, WKScriptMessageHandler {
@@ -67,7 +75,110 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
     private lazy var normalBeepWav: Data = makeCountdownBeepWav(isFinal: false)
     private lazy var finalBeepWav: Data = makeCountdownBeepWav(isFinal: true)
     private lazy var completionChimeWav: Data = makeCompletionChimeWav()
+    private lazy var shortGapWav: Data = makeToneWav(notes: [], totalDuration: 0.12)
     private lazy var silentWav: Data = makeSilentWav()
+
+    struct WorkoutInterval {
+        let phase: String
+        let duration: Int
+        let startClips: [String]
+        let warningClip: String?
+    }
+
+    struct WorkoutConfig {
+        let title: String
+        let voiceId: String
+        let rate: Float
+        let volume: Float
+        let duck: Bool
+        let chimeEnabled: Bool
+        let tenSecondWarningEnabled: Bool
+        let countdownEnabled: Bool
+        let workoutHalfwayEnabled: Bool
+        let silentStart: Bool
+    }
+
+    private var workoutConfig: WorkoutConfig?
+    private var workoutIntervals: [WorkoutInterval] = []
+    private var currentIdx: Int = 0
+    private var currentBlockTotal: Int = 60
+    private var secondsLeft: Int = 60
+    private var blockEndTime: Date?
+    private var isWorkoutRunning: Bool = false
+    private var isWorkoutPaused: Bool = false
+    private var isWorkoutCompleted: Bool = false
+    private var isMuted: Bool = false
+    private var announcedTenSec: Bool = false
+    private var beepsCounted: Set<Int> = []
+    private var workoutHalfwayTarget: Int = 0
+    private var workoutHalfwayAnnounced: Bool = false
+    private var wasInterruptedByPause: Bool = false
+    private var totalTime: Int = 0
+    private var runTime: Int = 0
+    private var walkTime: Int = 0
+    private var completedIntervals: Int = 0
+    private var workoutTimer: DispatchSourceTimer?
+
+    override init() {
+        super.init()
+        let center = NotificationCenter.default
+        center.addObserver(
+            self,
+            selector: #selector(handleAudioInterruption(_:)),
+            name: AVAudioSession.interruptionNotification,
+            object: nil
+        )
+        center.addObserver(
+            self,
+            selector: #selector(handleAudioRouteChange(_:)),
+            name: AVAudioSession.routeChangeNotification,
+            object: nil
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func handleAudioInterruption(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let typeRaw = userInfo[AVAudioSession.interruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeRaw) else { return }
+
+        if type == .ended {
+            audioQueue.async { [weak self] in
+                guard let self = self else { return }
+                if self.currentPlayer != nil && self.currentPlayer?.isPlaying == false {
+                    self.currentPlayer = nil
+                    self.playbackQueue.removeAll()
+                    self.finishSessionAfterPlayback()
+                } else if self.isWorkoutActive {
+                    self.activateKeepAliveSession()
+                }
+            }
+        }
+    }
+
+    @objc private func handleAudioRouteChange(_ notification: Notification) {
+        audioQueue.async { [weak self] in
+            guard let self = self else { return }
+            if self.isWorkoutActive && self.currentPlayer == nil && self.keepAlivePlayer?.isPlaying == false {
+                self.activateKeepAliveSession()
+            }
+        }
+    }
+
+    func handleAppForeground() {
+        audioQueue.async { [weak self] in
+            guard let self = self else { return }
+            if self.isWorkoutActive && self.currentPlayer == nil {
+                self.activateKeepAliveSession()
+            }
+            if self.workoutConfig != nil || self.isWorkoutCompleted {
+                self.notifyWorkoutState()
+            }
+        }
+    }
 
     enum PlaybackItem {
         case wavData(Data, volume: Float)
@@ -141,9 +252,406 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
                 self.playbackQueue.removeAll()
                 self.finishSessionAfterPlayback()
 
+            case "startWorkout":
+                self.handleStartWorkout(body)
+
+            case "pauseWorkout":
+                self.handlePauseWorkout()
+
+            case "resumeWorkout":
+                self.handleResumeWorkout()
+
+            case "skipNextWorkout":
+                self.handleSkipNextWorkout()
+
+            case "skipPrevWorkout":
+                self.handleSkipPrevWorkout()
+
+            case "addSecondsWorkout":
+                let delta = (body["seconds"] as? Int) ?? 30
+                self.handleAddSecondsWorkout(delta)
+
+            case "setMutedWorkout":
+                let muted = (body["isMuted"] as? Bool) ?? false
+                self.handleSetMutedWorkout(muted)
+
+            case "stopWorkout":
+                self.handleStopWorkout()
+
+            case "getWorkoutState":
+                if self.workoutConfig != nil || self.isWorkoutCompleted {
+                    self.notifyWorkoutState()
+                }
+
             default:
                 break
             }
+        }
+    }
+
+    private func handleStartWorkout(_ body: [String: Any]) {
+        guard let rawIntervals = body["intervals"] as? [[String: Any]], !rawIntervals.isEmpty else { return }
+
+        let parsedIntervals: [WorkoutInterval] = rawIntervals.map { item in
+            let phase = (item["phase"] as? String) ?? "run"
+            let duration = max(1, (item["duration"] as? Int) ?? 60)
+            let startClips = (item["startClips"] as? [String]) ?? ["run_60_1m"]
+            let warningClip = item["warningClip"] as? String
+            return WorkoutInterval(phase: phase, duration: duration, startClips: startClips, warningClip: warningClip)
+        }
+
+        let voiceId = (body["voiceId"] as? String) ?? "us-andrew"
+        let rate = Float((body["rate"] as? Double) ?? 1.0)
+        let volume = Float((body["volume"] as? Double) ?? 1.0)
+        let sessionMode = (body["sessionMode"] as? String) ?? "transient"
+        let duck = (sessionMode == "transient" || sessionMode == "duck")
+
+        let config = WorkoutConfig(
+            title: (body["workoutTitle"] as? String) ?? "Workout",
+            voiceId: voiceId,
+            rate: rate,
+            volume: volume,
+            duck: duck,
+            chimeEnabled: (body["chimeEnabled"] as? Bool) ?? true,
+            tenSecondWarningEnabled: (body["tenSecondWarningEnabled"] as? Bool) ?? true,
+            countdownEnabled: (body["countdownEnabled"] as? Bool) ?? true,
+            workoutHalfwayEnabled: (body["workoutHalfwayEnabled"] as? Bool) ?? true,
+            silentStart: (body["silentStart"] as? Bool) ?? false
+        )
+
+        stopWorkoutTimer()
+        currentPlayer?.stop()
+        currentPlayer = nil
+        playbackQueue.removeAll()
+
+        workoutConfig = config
+        workoutIntervals = parsedIntervals
+        currentIdx = 0
+        currentBlockTotal = parsedIntervals[0].duration
+        secondsLeft = currentBlockTotal
+        blockEndTime = Date().addingTimeInterval(TimeInterval(currentBlockTotal))
+        isWorkoutRunning = true
+        isWorkoutPaused = false
+        isWorkoutCompleted = false
+        isWorkoutActive = true
+        isMuted = (body["isMuted"] as? Bool) ?? false
+        announcedTenSec = false
+        beepsCounted.removeAll()
+        wasInterruptedByPause = false
+        totalTime = 0
+        runTime = 0
+        walkTime = 0
+        completedIntervals = 0
+
+        let totalWorkoutSec = parsedIntervals.reduce(0) { $0 + $1.duration }
+        workoutHalfwayTarget = totalWorkoutSec / 2
+        workoutHalfwayAnnounced = false
+
+        activateKeepAliveSession()
+        startWorkoutTimer()
+
+        if !isMuted && !config.silentStart {
+            playWorkoutCue(clips: parsedIntervals[0].startClips, withChime: config.chimeEnabled, config: config)
+        }
+
+        notifyWorkoutState()
+    }
+
+    private func handlePauseWorkout() {
+        guard isWorkoutRunning, !isWorkoutPaused else { return }
+        if let endTime = blockEndTime {
+            let remaining = max(0, Int(ceil(endTime.timeIntervalSinceNow)))
+            if remaining < secondsLeft && currentIdx < workoutIntervals.count {
+                let delta = secondsLeft - remaining
+                let phase = workoutIntervals[currentIdx].phase
+                totalTime += delta
+                if phase == "run" || phase == "sprint" {
+                    runTime += delta
+                } else {
+                    walkTime += delta
+                }
+                secondsLeft = remaining
+            }
+        }
+        isWorkoutPaused = true
+        stopWorkoutTimer()
+        wasInterruptedByPause = (currentPlayer != nil)
+        currentPlayer?.stop()
+        currentPlayer = nil
+        playbackQueue.removeAll()
+        finishSessionAfterPlayback()
+        notifyWorkoutState()
+    }
+
+    private func handleResumeWorkout() {
+        guard isWorkoutRunning, isWorkoutPaused, let config = workoutConfig else { return }
+        isWorkoutPaused = false
+        blockEndTime = Date().addingTimeInterval(TimeInterval(secondsLeft))
+        activateKeepAliveSession()
+        startWorkoutTimer()
+
+        if wasInterruptedByPause && !isMuted && currentIdx < workoutIntervals.count {
+            wasInterruptedByPause = false
+            playWorkoutCue(clips: workoutIntervals[currentIdx].startClips, withChime: config.chimeEnabled, config: config)
+        } else {
+            wasInterruptedByPause = false
+        }
+        notifyWorkoutState()
+    }
+
+    private func handleSkipNextWorkout() {
+        guard isWorkoutRunning, let config = workoutConfig, currentIdx < workoutIntervals.count - 1 else { return }
+        currentIdx += 1
+        let nextInt = workoutIntervals[currentIdx]
+        currentBlockTotal = nextInt.duration
+        secondsLeft = currentBlockTotal
+        blockEndTime = isWorkoutPaused ? nil : Date().addingTimeInterval(TimeInterval(currentBlockTotal))
+        announcedTenSec = false
+        beepsCounted.removeAll()
+        wasInterruptedByPause = false
+
+        if !isMuted {
+            playWorkoutCue(clips: nextInt.startClips, withChime: config.chimeEnabled, config: config)
+        }
+        notifyWorkoutState()
+    }
+
+    private func handleSkipPrevWorkout() {
+        guard isWorkoutRunning, let config = workoutConfig else { return }
+        if secondsLeft < currentBlockTotal - 3 {
+            secondsLeft = currentBlockTotal
+            blockEndTime = isWorkoutPaused ? nil : Date().addingTimeInterval(TimeInterval(currentBlockTotal))
+            announcedTenSec = false
+            beepsCounted.removeAll()
+            wasInterruptedByPause = false
+            if !isMuted && currentIdx < workoutIntervals.count {
+                playWorkoutCue(clips: workoutIntervals[currentIdx].startClips, withChime: config.chimeEnabled, config: config)
+            }
+            notifyWorkoutState()
+        } else if currentIdx > 0 {
+            currentIdx -= 1
+            let prevInt = workoutIntervals[currentIdx]
+            currentBlockTotal = prevInt.duration
+            secondsLeft = currentBlockTotal
+            blockEndTime = isWorkoutPaused ? nil : Date().addingTimeInterval(TimeInterval(currentBlockTotal))
+            announcedTenSec = false
+            beepsCounted.removeAll()
+            wasInterruptedByPause = false
+            if !isMuted {
+                playWorkoutCue(clips: prevInt.startClips, withChime: config.chimeEnabled, config: config)
+            }
+            notifyWorkoutState()
+        }
+    }
+
+    private func handleAddSecondsWorkout(_ delta: Int) {
+        guard isWorkoutRunning, delta > 0 else { return }
+        secondsLeft += delta
+        currentBlockTotal += delta
+        if !isWorkoutPaused {
+            blockEndTime = Date().addingTimeInterval(TimeInterval(secondsLeft))
+        }
+        notifyWorkoutState()
+    }
+
+    private func handleSetMutedWorkout(_ muted: Bool) {
+        isMuted = muted
+        if muted {
+            currentPlayer?.stop()
+            currentPlayer = nil
+            playbackQueue.removeAll()
+            finishSessionAfterPlayback()
+        } else if isWorkoutRunning, !isWorkoutPaused, let config = workoutConfig, currentIdx < workoutIntervals.count {
+            playWorkoutCue(clips: workoutIntervals[currentIdx].startClips, withChime: config.chimeEnabled, config: config)
+        }
+        notifyWorkoutState()
+    }
+
+    private func handleStopWorkout() {
+        stopWorkoutTimer()
+        isWorkoutRunning = false
+        isWorkoutPaused = false
+        isWorkoutCompleted = false
+        isWorkoutActive = false
+        workoutConfig = nil
+        workoutIntervals = []
+        blockEndTime = nil
+        currentPlayer?.stop()
+        currentPlayer = nil
+        playbackQueue.removeAll()
+        keepAlivePlayer?.stop()
+        keepAlivePlayer = nil
+        try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+    }
+
+    private func startWorkoutTimer() {
+        stopWorkoutTimer()
+        let timer = DispatchSource.makeTimerSource(queue: audioQueue)
+        timer.schedule(deadline: .now() + 0.25, repeating: 0.25, leeway: .milliseconds(40))
+        timer.setEventHandler { [weak self] in
+            self?.tickWorkout()
+        }
+        workoutTimer = timer
+        timer.resume()
+    }
+
+    private func stopWorkoutTimer() {
+        workoutTimer?.cancel()
+        workoutTimer = nil
+    }
+
+    private func tickWorkout() {
+        guard isWorkoutRunning,
+              !isWorkoutPaused,
+              !isWorkoutCompleted,
+              let config = workoutConfig,
+              let endTime = blockEndTime,
+              currentIdx < workoutIntervals.count else { return }
+
+        let now = Date()
+        let computedRemaining = max(0, Int(ceil(endTime.timeIntervalSince(now))))
+        if computedRemaining == secondsLeft {
+            return
+        }
+
+        let delta = max(0, secondsLeft - computedRemaining)
+        if delta > 0 {
+            let phase = workoutIntervals[currentIdx].phase
+            totalTime += delta
+            if phase == "run" || phase == "sprint" {
+                runTime += delta
+            } else {
+                walkTime += delta
+            }
+        }
+        secondsLeft = computedRemaining
+
+        if computedRemaining <= 0 {
+            completedIntervals += 1
+            if currentIdx >= workoutIntervals.count - 1 {
+                isWorkoutRunning = false
+                isWorkoutPaused = false
+                isWorkoutCompleted = true
+                stopWorkoutTimer()
+                isWorkoutActive = false
+
+                if !isMuted {
+                    var items: [PlaybackItem] = []
+                    if config.countdownEnabled {
+                        items.append(.wavData(finalBeepWav, volume: 0.55))
+                        items.append(.wavData(shortGapWav, volume: 0.01))
+                    }
+                    items.append(.wavData(completionChimeWav, volume: 0.55))
+                    items.append(.wavData(shortGapWav, volume: 0.01))
+                    if let completeURL = findVoiceClipURL(voiceId: config.voiceId, clipKey: "complete") {
+                        items.append(.fileURL(completeURL, rate: config.rate, volume: min(1.0, config.volume)))
+                    }
+                    startQueue(items: items, duck: config.duck, requestId: nil)
+                } else {
+                    keepAlivePlayer?.stop()
+                    keepAlivePlayer = nil
+                    try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+                }
+                notifyWorkoutState()
+                return
+            } else {
+                currentIdx += 1
+                let nextInt = workoutIntervals[currentIdx]
+                currentBlockTotal = nextInt.duration
+                secondsLeft = currentBlockTotal
+                blockEndTime = now.addingTimeInterval(TimeInterval(currentBlockTotal))
+                announcedTenSec = false
+                beepsCounted.removeAll()
+                wasInterruptedByPause = false
+
+                if !isMuted {
+                    var items: [PlaybackItem] = []
+                    if config.countdownEnabled {
+                        items.append(.wavData(finalBeepWav, volume: 0.55))
+                        items.append(.wavData(shortGapWav, volume: 0.01))
+                    }
+                    if config.chimeEnabled {
+                        items.append(.wavData(preCueChimeWav, volume: 0.45))
+                    }
+                    for clipKey in nextInt.startClips {
+                        if let url = findVoiceClipURL(voiceId: config.voiceId, clipKey: clipKey) {
+                            items.append(.fileURL(url, rate: config.rate, volume: min(1.0, config.volume)))
+                        }
+                    }
+                    startQueue(items: items, duck: config.duck, requestId: nil)
+                }
+                notifyWorkoutState()
+                return
+            }
+        }
+
+        if !isMuted,
+           config.workoutHalfwayEnabled,
+           !workoutHalfwayAnnounced,
+           totalTime >= workoutHalfwayTarget,
+           currentPlayer == nil,
+           computedRemaining > 12,
+           computedRemaining < currentBlockTotal - 4 {
+            workoutHalfwayAnnounced = true
+            playWorkoutCue(clips: ["workout_halfway"], withChime: config.chimeEnabled, config: config)
+        }
+
+        if !isMuted,
+           config.tenSecondWarningEnabled,
+           computedRemaining <= 10,
+           computedRemaining >= 8,
+           !announcedTenSec,
+           currentIdx < workoutIntervals.count - 1,
+           let warnClip = workoutIntervals[currentIdx].warningClip {
+            announcedTenSec = true
+            playWorkoutCue(clips: [warnClip], withChime: config.chimeEnabled, config: config)
+        }
+
+        if !isMuted,
+           config.countdownEnabled,
+           (computedRemaining == 3 || computedRemaining == 2 || computedRemaining == 1),
+           !beepsCounted.contains(computedRemaining) {
+            beepsCounted.insert(computedRemaining)
+            startQueue(items: [.wavData(normalBeepWav, volume: 0.40)], duck: false, requestId: nil)
+        }
+
+        notifyWorkoutState()
+    }
+
+    private func playWorkoutCue(clips: [String], withChime: Bool, config: WorkoutConfig) {
+        var items: [PlaybackItem] = []
+        if withChime {
+            items.append(.wavData(preCueChimeWav, volume: 0.45))
+        }
+        for clipKey in clips {
+            if let url = findVoiceClipURL(voiceId: config.voiceId, clipKey: clipKey) {
+                items.append(.fileURL(url, rate: config.rate, volume: min(1.0, config.volume)))
+            }
+        }
+        startQueue(items: items, duck: config.duck, requestId: nil)
+    }
+
+    private func notifyWorkoutState() {
+        let payload: [String: Any] = [
+            "currentIdx": currentIdx,
+            "secondsLeft": secondsLeft,
+            "currentBlockTotal": currentBlockTotal,
+            "isRunning": isWorkoutRunning && !isWorkoutPaused,
+            "isPaused": isWorkoutPaused,
+            "isCompleted": isWorkoutCompleted,
+            "isMuted": isMuted,
+            "totalTime": totalTime,
+            "runTime": runTime,
+            "walkTime": walkTime,
+            "completedIntervals": completedIntervals
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: []),
+              let jsonString = String(data: data, encoding: .utf8) else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.webView?.evaluateJavaScript(
+                "window.__onNativeWorkoutState && window.__onNativeWorkoutState(\(jsonString));",
+                completionHandler: nil
+            )
         }
     }
 
@@ -203,7 +711,10 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
             player.delegate = self
             player.prepareToPlay()
             currentPlayer = player
-            player.play()
+            if !player.play() {
+                currentPlayer = nil
+                playNextInQueue()
+            }
         } catch {
             print("NativeAudioCoach player error: \(error)")
             playNextInQueue()
@@ -213,18 +724,48 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
     private func finishSessionAfterPlayback() {
         let session = AVAudioSession.sharedInstance()
         if currentDuckMode {
-            keepAlivePlayer?.pause()
-            try? session.setActive(false, options: [.notifyOthersOnDeactivation])
             if isWorkoutActive {
-                audioQueue.asyncAfter(deadline: .now() + 0.08) { [weak self] in
-                    guard let self = self, self.currentPlayer == nil, self.isWorkoutActive else { return }
-                    self.activateKeepAliveSession()
+                DispatchQueue.main.async { [weak self] in
+                    var bgTaskId: UIBackgroundTaskIdentifier = .invalid
+                    let endBgTask = {
+                        DispatchQueue.main.async {
+                            if bgTaskId != .invalid {
+                                UIApplication.shared.endBackgroundTask(bgTaskId)
+                                bgTaskId = .invalid
+                            }
+                        }
+                    }
+                    bgTaskId = UIApplication.shared.beginBackgroundTask(withName: "UnduckAudioSession") {
+                        endBgTask()
+                    }
+                    self?.audioQueue.async { [weak self] in
+                        guard let self = self else {
+                            endBgTask()
+                            return
+                        }
+                        if self.currentPlayer == nil {
+                            self.keepAlivePlayer?.pause()
+                            try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+                        }
+                        self.audioQueue.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                            if let self = self, self.currentPlayer == nil, self.isWorkoutActive {
+                                self.activateKeepAliveSession()
+                            }
+                            endBgTask()
+                        }
+                    }
                 }
+            } else {
+                keepAlivePlayer?.stop()
+                keepAlivePlayer = nil
+                try? session.setActive(false, options: [.notifyOthersOnDeactivation])
             }
         } else {
             if isWorkoutActive {
                 activateKeepAliveSession()
             } else {
+                keepAlivePlayer?.stop()
+                keepAlivePlayer = nil
                 try? session.setActive(false, options: [.notifyOthersOnDeactivation])
             }
         }
@@ -238,7 +779,7 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
             if keepAlivePlayer == nil {
                 let player = try AVAudioPlayer(data: silentWav)
                 player.numberOfLoops = -1
-                player.volume = 0.0
+                player.volume = 0.01
                 player.prepareToPlay()
                 keepAlivePlayer = player
             }

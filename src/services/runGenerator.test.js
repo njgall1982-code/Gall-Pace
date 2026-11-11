@@ -1,9 +1,17 @@
-﻿import { test } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateRun, CLIP_DURATIONS, WARMUP_SEC, COOLDOWN_SEC } from './runGenerator.js';
+import {
+  generateRun,
+  DEFAULT_PARAMS,
+  INTENSITY_LEVELS,
+  CLIP_DURATIONS,
+  WARMUP_SEC,
+  COOLDOWN_SEC,
+} from './runGenerator.js';
 
 const mains = (w) => w.intervals.slice(1, -1);
 const runsOf = (w) => w.intervals.filter((i) => i.phase === 'run').map((i) => i.duration);
+const runIntervalsOf = (w) => w.intervals.filter((i) => i.phase === 'run' || i.phase === 'sprint');
 const walksOf = (w) => w.intervals.filter((i) => i.phase === 'walk').map((i) => i.duration);
 const triple = (d) => d.some((v, i) => i >= 2 && v === d[i - 1] && v === d[i - 2]);
 
@@ -94,6 +102,68 @@ test('default-ish settings: run % close to request and middle runs longest', () 
   }
   assert.ok(mid > first);
 });
+
+test('adult-friendly defaults: 20 min, 50% run, max 90s run, normal intensity', () => {
+  assert.equal(DEFAULT_PARAMS.totalMin, 20);
+  assert.equal(DEFAULT_PARAMS.runPct, 50);
+  assert.equal(DEFAULT_PARAMS.maxRunSec, 90);
+  assert.equal(DEFAULT_PARAMS.intensity, 'normal');
+
+  const w = generateRun({ seed: 101 });
+  assert.equal(w.stats.totalSec, 20 * 60);
+  assert.ok(Math.abs(w.stats.achievedRunPct - 50) <= 3);
+  assert.ok(runsOf(w).every((d) => d <= 90));
+  assert.equal(w.level, 'Normal');
+});
+
+test('gradual effort ramp: Run 1 never exceeds 40% (35% on Gentle), even on 15 min runs', () => {
+  for (const intensity of ['gentle', 'normal', 'hard']) {
+    const cfg = INTENSITY_LEVELS[intensity];
+    for (const totalMin of [15, 20, 30, 45]) {
+      for (const runPct of [25, 50, 75]) {
+        for (const seed of [1, 7, 19, 42, 99]) {
+          const w = generateRun({ totalMin, runPct, intensity, seed });
+          const runs = runIntervalsOf(w);
+          const firstEffort = runs[0].effort;
+          assert.ok(
+            firstEffort <= cfg.firstRunCap,
+            `${intensity} ${totalMin}m ${runPct}% seed=${seed}: Run 1 effort ${firstEffort}% exceeded ${cfg.firstRunCap}%`,
+          );
+          if (runs.length > 1) {
+            assert.ok(
+              runs[1].effort <= cfg.secondRunCap,
+              `${intensity} ${totalMin}m ${runPct}% seed=${seed}: Run 2 effort ${runs[1].effort}% exceeded ${cfg.secondRunCap}%`,
+            );
+          }
+          assert.ok(
+            runs.every((r) => r.effort >= cfg.effortMin && r.effort <= cfg.effortMax),
+            `${intensity} efforts out of [${cfg.effortMin}, ${cfg.effortMax}]: ${runs.map((r) => r.effort)}`,
+          );
+        }
+      }
+    }
+  }
+});
+
+test('drastic shuffle: seeds vary interval count and pacing archetype on short & default runs', () => {
+  for (const totalMin of [15, 20]) {
+    const counts = new Set();
+    const archetypes = new Set();
+    for (let s = 1; s <= 40; s++) {
+      const w = generateRun({ totalMin, runPct: 50, seed: s * 131 });
+      counts.add(w.stats.runCount);
+      archetypes.add(w.stats.archetype);
+    }
+    const minCount = Math.min(...counts);
+    const maxCount = Math.max(...counts);
+    assert.ok(
+      maxCount - minCount >= 3,
+      `${totalMin}m shuffle runCount range too narrow: ${[...counts].sort((a, b) => a - b)}`,
+    );
+    assert.ok(archetypes.size >= 3, `${totalMin}m expected >=3 archetypes, got ${[...archetypes]}`);
+  }
+});
+
 
 
 

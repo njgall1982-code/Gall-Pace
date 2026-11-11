@@ -14,86 +14,134 @@ export const CLIP_DURATIONS = [15, 30, 45, 60, 75, 90, 105, 120, 150, 180, 240, 
 
 export const WARMUP_SEC = 120;
 export const COOLDOWN_SEC = 120;
-export const RUN_EFFORT = 60;
+export const RUN_EFFORT = 55;
 export const MAX_RUN_HARD_CAP = 300; // longest voice clip
 
+export const INTENSITY_LEVELS = {
+  gentle: {
+    id: 'gentle',
+    label: 'Gentle',
+    description: 'Easy jogs, softer ramp (30–50%)',
+    effortMin: 30,
+    effortMax: 50,
+    firstRunCap: 35,
+    secondRunCap: 45,
+    baseRange: [33, 43],
+    surgeDelta: 4,
+    durBoostMax: 0,
+  },
+  normal: {
+    id: 'normal',
+    label: 'Normal',
+    description: 'Gradual build, steady pace (35–65%)',
+    effortMin: 35,
+    effortMax: 65,
+    firstRunCap: 40,
+    secondRunCap: 50,
+    baseRange: [44, 56],
+    surgeDelta: 8,
+    durBoostMax: 5,
+  },
+  hard: {
+    id: 'hard',
+    label: 'Hard',
+    description: 'Easy start, stronger push (40–80%)',
+    effortMin: 40,
+    effortMax: 80,
+    firstRunCap: 40,
+    secondRunCap: 55,
+    baseRange: [52, 68],
+    surgeDelta: 12,
+    durBoostMax: 5,
+  },
+};
+
+export const ARCHETYPES = {
+  snappy: { id: 'snappy', label: 'Snappy Repeats' },
+  pyramid: { id: 'pyramid', label: 'Middle Peak' },
+  steady: { id: 'steady', label: 'Steady Rhythm' },
+  cruise: { id: 'cruise', label: 'Longer Blocks' },
+};
+
 /**
- * Calculates a natural effort progression for runs and walks.
- * - Base effort scales with overall runPct (higher run% = higher pace/fitness).
- * - Progression curve ramps up: starts conversational, peaks in middle/late.
- * - Shorter runs encourage faster surges; longer endurance intervals back off slightly.
- * - Walks distinguish between "Recovery Walk" (after hard/long runs) and "Brisk Walk" (to stay warm).
+ * Calculates a gradual, adult-friendly effort progression for runs and walks.
+ * - Enforces an easy on-ramp: Run 1 is always capped (<= 40% default, <= 35% gentle),
+ *   and Run 2 stays conservative so workouts never spike straight out of warm-up.
+ * - Intensity level ('gentle' | 'normal' | 'hard') sets the effort ceiling and slope.
+ * - Overall runPct gently nudges base effort within the chosen intensity's band.
  */
-export function calculateEffortArc(runs, walks, runPct, rng) {
+export function calculateEffortArc(runs, walks, runPct, rng, intensity = 'normal') {
   const n = runs.length;
   if (!n) return { runEfforts: [], walkNames: [] };
 
-  // Base target effort based on runPct (10% -> 45 effort, 50% -> 60 effort, 90% -> 75 effort)
-  const baseEffort = clamp(Math.round(45 + ((runPct - 10) / 80) * 30), 45, 75);
+  const cfg = INTENSITY_LEVELS[intensity] || INTENSITY_LEVELS.normal;
+  const pctNorm = clamp((runPct - 10) / 80, 0, 1);
+  const baseEffort = cfg.baseRange[0] + pctNorm * (cfg.baseRange[1] - cfg.baseRange[0]);
 
-  // Available effort steps in voice clips: 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95
-  const snapEffort = (val) => clamp(Math.round(val / 5) * 5, 40, 95);
+  // Available effort steps in voice clips: 30..95 in steps of 5
+  const snapEffort = (val, lo = cfg.effortMin, hi = cfg.effortMax) =>
+    clamp(Math.round(val / 5) * 5, lo, hi);
 
-  // Randomize style per shuffle seed:
-  // 0: Classic Ramp (starts easy, steadily climbs to strong finish)
-  // 1: Peak Pyramid (starts easy, peaks in the middle, steady finish)
-  // 2: Interval Surges (alternates steady and push)
+  // Progression shape per shuffle seed:
+  // 0: Gradual Ramp (starts low, builds steadily toward final third)
+  // 1: Gentle Pyramid (starts low, peaks in middle, eases off slightly at finish)
+  // 2: Rolling Surges (alternates steady and slightly firmer pushes after warm-in)
   const styleRoll = rng ? Math.floor(rng() * 3) : 0;
 
   const runEfforts = runs.map((dur, i) => {
-    const progress = n > 1 ? i / (n - 1) : 0.5; // 0.0 to 1.0 through the run blocks
+    const progress = n > 1 ? i / (n - 1) : 0;
     let curveDelta = 0;
 
     if (styleRoll === 0) {
-      // Classic Ramp: from -10 to +10
-      curveDelta = (progress - 0.4) * 20;
+      curveDelta = (progress - 0.35) * (cfg.surgeDelta * 1.8);
     } else if (styleRoll === 1) {
-      // Peak Pyramid: peaks in middle (sinusoidal bell curve)
-      curveDelta = Math.sin(progress * Math.PI) * 15 - 5;
+      curveDelta = Math.sin(progress * Math.PI) * (cfg.surgeDelta * 1.4) - cfg.surgeDelta * 0.4;
     } else {
-      // Interval Surges: wave with slight upward bias
-      const wave = (i % 2 === 1) ? 10 : -5;
-      curveDelta = wave + (progress * 5);
+      const wave = i >= 2 && i % 2 === 1 ? cfg.surgeDelta * 0.7 : -cfg.surgeDelta * 0.3;
+      curveDelta = wave + progress * (cfg.surgeDelta * 0.8);
     }
 
-    // Duration modifier:
-    // Short runs (<= 45s) can handle a faster surge (+5 to +10%)
-    // Long runs (>= 180s) need a sustainable rhythm (-5 to -10%)
+    // Duration modifier only applies AFTER the first two on-ramp intervals,
+    // so short 15-min runs never spike to high effort right after warm-up.
     let durModifier = 0;
-    if (dur <= 30) durModifier = +10;
-    else if (dur <= 45) durModifier = +5;
-    else if (dur >= 240) durModifier = -10;
-    else if (dur >= 180) durModifier = -5;
+    if (i >= 2) {
+      if (dur <= 30) durModifier = cfg.durBoostMax;
+      else if (dur >= 240) durModifier = -10;
+      else if (dur >= 180) durModifier = -5;
+    }
 
-    // Small jitter for human realism
-    const jitter = rng ? (rng() - 0.5) * 6 : 0;
+    const jitter = rng ? (rng() - 0.5) * 5 : 0;
+    let hiCap = cfg.effortMax;
+    if (i === 0) hiCap = Math.min(hiCap, cfg.firstRunCap);
+    else if (i === 1) hiCap = Math.min(hiCap, cfg.secondRunCap);
 
-    const raw = baseEffort + curveDelta + durModifier + jitter;
-    return snapEffort(raw);
+    // Ensure Run 1 starts gently even if baseEffort is toward the top of the band.
+    const onRampBias = i === 0 ? -10 : i === 1 ? -5 : 0;
+    const raw = baseEffort + onRampBias + curveDelta + durModifier + jitter;
+    return snapEffort(raw, cfg.effortMin, hiCap);
   });
 
-  // Walk naming & style:
-  // Walks following high effort (>= 75%) or long runs (>= 120s) are "Recovery Walk"
-  // Shorter walks or after mild runs are "Brisk Walk"
+  // Walk naming & style
   const walkNames = walks.map((dur, i) => {
-    const precedingRunEffort = runEfforts[i] || 60;
+    const precedingRunEffort = runEfforts[i] || 50;
     const precedingRunDur = runs[i] || 60;
-    const isHard = precedingRunEffort >= 75 || precedingRunDur >= 120;
-    return isHard ? 'Recovery Walk' : 'Brisk Walk';
+    const isHard = precedingRunEffort >= 65 || precedingRunDur >= 120;
+    return isHard ? 'Recovery Walk' : intensity === 'gentle' ? 'Easy Walk' : 'Brisk Walk';
   });
 
   return { runEfforts, walkNames };
 }
 
-const MIN_RUN = 45;          // default shortest run (user-adjustable, floor 15s)
+const MIN_RUN = 30;          // default shortest run (user-adjustable, floor 15s)
 const MIN_RUN_RELAXED = 30;
-const MIN_WALK = 30;         // default shortest walk (user-adjustable, floor 15s)
+const MIN_WALK = 15;         // default shortest walk (user-adjustable, floor 15s)
 const SHORTEST_ALLOWED = 15;
 
 export const DEFAULT_PARAMS = {
-  totalMin: 30,
+  totalMin: 20,
   runPct: 50,          // 10..90
-  maxRunSec: 180,
+  intensity: 'normal', // 'gentle' | 'normal' | 'hard'
+  maxRunSec: 90,
   maxWalkSec: 90,
   allowLongRuns: false, // true lifts the run cap to MAX_RUN_HARD_CAP
   longerRunsInMiddle: true,
@@ -225,11 +273,23 @@ export function formatClock(sec) {
 
 // ---------- planning ----------
 
+const ARCHETYPE_LIST = ['snappy', 'pyramid', 'steady', 'cruise'];
+
+function pickArchetype(params, rng) {
+  const roll = rng();
+  if (!params.longerRunsInMiddle) {
+    // Skip pyramid emphasis when user explicitly disabled middle-heavy runs.
+    const flatTypes = ['snappy', 'steady', 'cruise'];
+    return flatTypes[Math.floor(roll * flatTypes.length)];
+  }
+  return ARCHETYPE_LIST[Math.floor(roll * ARCHETYPE_LIST.length)];
+}
+
 /**
  * Decide how many runs and how much total run time. Returns
- * { n, R, runLo, relaxedWalk } where R is the total run seconds.
+ * { n, R, minRun, relaxedWalk } where R is the total run seconds.
  */
-function plan(main, runTarget, runCap, walkCap, minRunPref, minWalk) {
+function plan(main, runTarget, runCap, walkCap, minRunPref, minWalk, archetype = 'pyramid', rng = null) {
   const desired = Math.max(2, Math.round(runTarget / (0.6 * runCap)));
   const tol = Math.max(30, main * 0.02);
   const cands = [];
@@ -246,14 +306,37 @@ function plan(main, runTarget, runCap, walkCap, minRunPref, minWalk) {
 
   if (cands.length) {
     // Prefer arrangements that hit the requested run % (within tolerance), then the
-    // normal minimum run, then a segment count near the ideal one.
+    // normal minimum run, then pick interval count n according to the shuffle archetype.
     const good = cands.filter((c) => c.dev <= tol);
     const pool = good.length ? good : cands;
-    pool.sort((a, b) =>
+    const bestMinRun = Math.max(...pool.map((c) => c.minRun));
+    const bestPool = good.length ? pool.filter((c) => c.minRun === bestMinRun) : pool;
+
+    const minN = Math.min(...bestPool.map((c) => c.n));
+    const maxN = Math.max(...bestPool.map((c) => c.n));
+    // Keep very long runs (60-90m) from exploding into 80+ micro-intervals while
+    // still letting 15-30m runs hit high-density snappy intervals.
+    const capN = Math.max(minN, Math.min(maxN, 36));
+    const jitter = rng ? rng() : 0.5;
+    let targetN = desired;
+
+    if (capN > minN) {
+      if (archetype === 'snappy') {
+        targetN = Math.round(minN + (capN - minN) * (0.68 + jitter * 0.3));
+      } else if (archetype === 'cruise') {
+        targetN = Math.round(minN + (capN - minN) * (0.04 + jitter * 0.24));
+      } else if (archetype === 'steady') {
+        targetN = Math.round(minN + (capN - minN) * (0.35 + jitter * 0.3));
+      } else {
+        targetN = Math.round(minN + (capN - minN) * (0.28 + jitter * 0.36));
+      }
+    }
+
+    bestPool.sort((a, b) =>
       good.length
-        ? a.minRun !== b.minRun ? b.minRun - a.minRun : Math.abs(a.n - desired) - Math.abs(b.n - desired)
-        : a.dev - b.dev || Math.abs(a.n - desired) - Math.abs(b.n - desired));
-    return pool[0];
+        ? Math.abs(a.n - targetN) - Math.abs(b.n - targetN)
+        : a.dev - b.dev || Math.abs(a.n - targetN) - Math.abs(b.n - targetN));
+    return bestPool[0];
   }
 
   // No arrangement honours every cap: keep the run cap and let walks run long
@@ -314,8 +397,18 @@ function buildOnce(params, main, rng) {
   const minWalk = params.minWalkSec;
   const walkCap = Math.max(minWalk, params.maxWalkSec);
   const runTarget = round15(main * (params.runPct / 100));
+  const archetype = pickArchetype(params, rng);
 
-  const { n, R, minRun, relaxedWalk } = plan(main, runTarget, runCap, walkCap, params.minRunSec, minWalk);
+  const { n, R, minRun, relaxedWalk } = plan(
+    main,
+    runTarget,
+    runCap,
+    walkCap,
+    params.minRunSec,
+    minWalk,
+    archetype,
+    rng,
+  );
   const W = main - R;
   const walkHi = relaxedWalk ? Math.max(walkCap, Math.ceil(W / (n - 1))) : walkCap;
 
@@ -323,8 +416,26 @@ function buildOnce(params, main, rng) {
   const runW = [];
   for (let i = 0; i < n; i++) {
     const x = n === 1 ? 0.5 : i / (n - 1);
-    const shape = params.longerRunsInMiddle ? 0.55 + 0.9 * Math.exp(-(((x - 0.5) / 0.28) ** 2)) : 1;
-    runW.push(shape * (1 + (rng() * 2 - 1) * 0.15));
+    const bell = Math.exp(-(((x - 0.5) / 0.28) ** 2));
+    let shape = 1;
+    let spread = 0.15;
+
+    if (archetype === 'pyramid') {
+      shape = params.longerRunsInMiddle ? 0.45 + 1.15 * bell : 1;
+      spread = 0.15;
+    } else if (archetype === 'snappy') {
+      shape = params.longerRunsInMiddle ? 0.85 + 0.25 * bell : 1;
+      spread = 0.28;
+    } else if (archetype === 'steady') {
+      shape = params.longerRunsInMiddle ? 0.9 + 0.2 * bell : 1;
+      spread = 0.08;
+    } else {
+      // 'cruise'
+      shape = params.longerRunsInMiddle ? 0.7 + 0.65 * bell : 1;
+      spread = 0.22;
+    }
+
+    runW.push(shape * (1 + (rng() * 2 - 1) * spread));
   }
   const runList = allowedList(minRun, runCap);
   const runVals = allocate(R, runW, minRun, runCap);
@@ -336,7 +447,8 @@ function buildOnce(params, main, rng) {
   const walkW = [];
   for (let i = 0; i < walkCount; i++) {
     const base = params.walkScaling === 'even' ? 1 : runs[i].dur;
-    walkW.push(base * (1 + (rng() * 2 - 1) * 0.1));
+    const walkSpread = archetype === 'steady' ? 0.06 : 0.14;
+    walkW.push(base * (1 + (rng() * 2 - 1) * walkSpread));
   }
   const walkVals = allocate(W, walkW, minWalk, walkHi);
   const walks = walkVals.map((v, i) => ({ kind: 'walk', dur: snapTo(walkList, v), w: walkW[i], list: walkList }));
@@ -359,6 +471,7 @@ function buildOnce(params, main, rng) {
     relaxedWalk,
     runCap,
     walkCap,
+    archetype,
   };
 }
 
@@ -368,6 +481,7 @@ export function normalizeParams(input = {}) {
   const p = { ...DEFAULT_PARAMS, ...input };
   p.totalMin = clamp(Math.round(p.totalMin), 10, 90);
   p.runPct = clamp(Math.round(p.runPct), 10, 90);
+  p.intensity = INTENSITY_LEVELS[p.intensity] ? p.intensity : DEFAULT_PARAMS.intensity;
   p.maxRunSec = clamp(Math.round(p.maxRunSec), 60, MAX_RUN_HARD_CAP);
   p.maxWalkSec = clamp(Math.round(p.maxWalkSec), 45, 150);
   p.minRunSec = clamp(Math.round(p.minRunSec), SHORTEST_ALLOWED, Math.min(p.maxRunSec, 120));
@@ -376,8 +490,8 @@ export function normalizeParams(input = {}) {
 }
 
 /**
- * generateRun({ totalMin, runPct, maxRunSec, maxWalkSec, allowLongRuns,
- *               longerRunsInMiddle, walkScaling, seed })
+ * generateRun({ totalMin, runPct, intensity, maxRunSec, maxWalkSec,
+ *               allowLongRuns, longerRunsInMiddle, walkScaling, seed })
  */
 export function generateRun(input = {}) {
   const seed = Number.isFinite(input.seed) ? input.seed : Math.floor(Math.random() * 1e9);
@@ -401,7 +515,13 @@ export function generateRun(input = {}) {
   const id = `gen-${seed}`;
 
   // Generate dynamic efforts and walk styles
-  const { runEfforts, walkNames } = calculateEffortArc(result.runs, result.walks, params.runPct, cueRng);
+  const { runEfforts, walkNames } = calculateEffortArc(
+    result.runs,
+    result.walks,
+    params.runPct,
+    cueRng,
+    params.intensity,
+  );
 
   const intervals = [
     {
@@ -456,6 +576,11 @@ export function generateRun(input = {}) {
   const achievedRunPct = Math.round((runSec / main) * 100);
   const totalSec = sum(intervals.map((i) => i.duration));
   const longestRun = Math.max(...result.runs);
+  const minEffort = runEfforts.length ? Math.min(...runEfforts) : RUN_EFFORT;
+  const maxEffort = runEfforts.length ? Math.max(...runEfforts) : RUN_EFFORT;
+  const startEffort = runEfforts[0] || RUN_EFFORT;
+  const intensityCfg = INTENSITY_LEVELS[params.intensity] || INTENSITY_LEVELS.normal;
+  const archetypeCfg = ARCHETYPES[result.archetype] || ARCHETYPES.pyramid;
 
   const notes = [];
   if (result.relaxedWalk) {
@@ -467,13 +592,13 @@ export function generateRun(input = {}) {
 
   return {
     id,
-    title: `${params.totalMin} min · ${achievedRunPct}% run`,
-    subtitle: 'Quick Run',
-    description: `Generated run/walk mix: ${result.runs.length} runs, longest ${formatClock(longestRun)}.`,
-    level: 'Custom',
+    title: `${params.totalMin} min · ${intensityCfg.label} · ${achievedRunPct}% run`,
+    subtitle: `Quick Run · ${archetypeCfg.label}`,
+    description: `Generated ${intensityCfg.label.toLowerCase()} run/walk mix: ${result.runs.length} runs (${startEffort}%–${maxEffort}% effort), longest ${formatClock(longestRun)}.`,
+    level: intensityCfg.label,
     category: 'Generated',
     accentColor: 'emerald',
-    tags: ['Generated', `${params.totalMin} Mins`],
+    tags: ['Generated', intensityCfg.label, `${params.totalMin} Mins`],
     generated: true,
     params: { ...params, seed },
     stats: {
@@ -483,6 +608,12 @@ export function generateRun(input = {}) {
       achievedRunPct,
       runCount: result.runs.length,
       longestRun,
+      minEffort,
+      maxEffort,
+      startEffort,
+      intensity: params.intensity,
+      archetype: result.archetype,
+      archetypeLabel: archetypeCfg.label,
       exact: result.ok,
     },
     notes,

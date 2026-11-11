@@ -1,11 +1,13 @@
 import React, { useMemo, useState } from 'react';
 import { Play, Shuffle, Save, Minus, Plus, ChevronDown, ChevronUp, Zap, Check } from 'lucide-react';
-import { generateRun, DEFAULT_PARAMS, formatClock } from '../services/runGenerator';
+import { generateRun, DEFAULT_PARAMS, INTENSITY_LEVELS, formatClock } from '../services/runGenerator';
 
 const STORAGE_KEY = 'intervalcoach_quickrun';
+const PARAMS_VERSION = 2;
 const LENGTH_CHIPS = [15, 20, 30, 45, 60];
+const INTENSITY_ORDER = ['gentle', 'normal', 'hard'];
 const RUN_PCT_CHIPS = [25, 50, 75];
-const MAX_RUN_CHIPS = [60, 120, 180, 240, 300];
+const MAX_RUN_CHIPS = [60, 90, 120, 180, 240, 300];
 const MAX_WALK_CHIPS = [45, 60, 90, 120, 150];
 const MIN_RUN_CHIPS = [15, 30, 45, 60];
 const MIN_WALK_CHIPS = [15, 30, 45];
@@ -23,7 +25,11 @@ const secLabel = (s) => (s % 60 === 0 ? `${s / 60}m` : s === 90 ? '1.5m' : s ===
 function loadParams() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? { ...DEFAULT_PARAMS, ...JSON.parse(raw) } : { ...DEFAULT_PARAMS };
+    if (!raw) return { ...DEFAULT_PARAMS };
+    const parsed = JSON.parse(raw);
+    if (parsed?.v !== PARAMS_VERSION) return { ...DEFAULT_PARAMS };
+    const { v: _v, ...rest } = parsed;
+    return { ...DEFAULT_PARAMS, ...rest };
   } catch {
     return { ...DEFAULT_PARAMS };
   }
@@ -64,7 +70,7 @@ export function QuickRunCard({ onStart, onSave }) {
     setParams((prev) => {
       const next = { ...prev, ...patch };
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...next, v: PARAMS_VERSION }));
       } catch {
         // storage unavailable; settings just won't persist
       }
@@ -75,9 +81,26 @@ export function QuickRunCard({ onStart, onSave }) {
 
   const workout = useMemo(() => generateRun({ ...params, seed }), [params, seed]);
   const totalSec = workout.stats.totalSec;
+  const activeLevel = INTENSITY_LEVELS[params.intensity] || INTENSITY_LEVELS.normal;
 
   const handleShuffle = () => {
-    setSeed(Math.floor(Math.random() * 1e9));
+    const prevPattern = workout.intervals
+      .filter((iv) => iv.phase === 'run' || iv.phase === 'sprint')
+      .map((iv) => iv.duration)
+      .join(',');
+    let nextSeed = Math.floor(Math.random() * 1e9);
+    for (let i = 0; i < 8; i++) {
+      const candidate = generateRun({ ...params, seed: nextSeed });
+      const nextPattern = candidate.intervals
+        .filter((iv) => iv.phase === 'run' || iv.phase === 'sprint')
+        .map((iv) => iv.duration)
+        .join(',');
+      if (nextPattern !== prevPattern || candidate.stats.archetype !== workout.stats.archetype) {
+        break;
+      }
+      nextSeed = Math.floor(Math.random() * 1e9);
+    }
+    setSeed(nextSeed);
     setSaved(false);
   };
 
@@ -88,10 +111,17 @@ export function QuickRunCard({ onStart, onSave }) {
 
   return (
     <section className="bg-gradient-to-br from-emerald-950/60 to-slate-900 border border-emerald-500/30 rounded-2xl p-4 sm:p-5 shadow-lg space-y-4">
-      <div className="flex items-center gap-2">
-        <Zap className="w-4 h-4 text-emerald-400" />
-        <h2 className="text-sm font-black text-white uppercase tracking-wide">Quick Run</h2>
-        <span className="text-xs text-slate-400">Build a run in seconds</span>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Zap className="w-4 h-4 text-emerald-400" />
+          <h2 className="text-sm font-black text-white uppercase tracking-wide">Quick Run</h2>
+          <span className="text-xs text-slate-400">Build a run in seconds</span>
+        </div>
+        {workout.stats.archetypeLabel && (
+          <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-800/90 border border-slate-700 text-slate-300">
+            {workout.stats.archetypeLabel}
+          </span>
+        )}
       </div>
 
       {/* Length */}
@@ -122,6 +152,34 @@ export function QuickRunCard({ onStart, onSave }) {
         </div>
       </div>
 
+      {/* Intensity Level */}
+      <div>
+        <Label value={`${activeLevel.effortMin}–${activeLevel.effortMax}% effort`}>Level</Label>
+        <div className="grid grid-cols-3 gap-2">
+          {INTENSITY_ORDER.map((id) => {
+            const cfg = INTENSITY_LEVELS[id];
+            const active = params.intensity === id;
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => update({ intensity: id })}
+                className={`px-3 py-2 rounded-xl text-left transition-all active:scale-95 border ${
+                  active
+                    ? 'bg-emerald-500 text-slate-950 border-emerald-400'
+                    : 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700'
+                }`}
+              >
+                <div className="text-xs font-black">{cfg.label}</div>
+                <div className={`text-[10px] font-semibold ${active ? 'text-slate-900' : 'text-slate-400'}`}>
+                  {cfg.effortMin}–{cfg.effortMax}%
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Run % */}
       <div>
         <Label value={`${params.runPct}% run / ${100 - params.runPct}% walk`}>Run vs walk</Label>
@@ -143,17 +201,6 @@ export function QuickRunCard({ onStart, onSave }) {
         </div>
       </div>
 
-      {/* Middle toggle */}
-      <label className="flex items-center gap-2 text-sm text-slate-200 cursor-pointer">
-        <input
-          type="checkbox"
-          checked={params.longerRunsInMiddle}
-          onChange={(e) => update({ longerRunsInMiddle: e.target.checked })}
-          className="w-4 h-4 accent-emerald-500"
-        />
-        Longer runs in the middle
-      </label>
-
       {/* Tweaks */}
       <div>
         <button
@@ -166,6 +213,15 @@ export function QuickRunCard({ onStart, onSave }) {
         </button>
         {showTweaks && (
           <div className="mt-3 space-y-3 bg-slate-950/50 border border-slate-800 rounded-xl p-3">
+            <label className="flex items-center gap-2 text-xs text-slate-200 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={params.longerRunsInMiddle}
+                onChange={(e) => update({ longerRunsInMiddle: e.target.checked })}
+                className="w-4 h-4 accent-emerald-500"
+              />
+              Longer runs in the middle
+            </label>
             <div>
               <Label value={secLabel(params.maxRunSec)}>Max run</Label>
               <div className="flex gap-2 flex-wrap">
@@ -244,8 +300,11 @@ export function QuickRunCard({ onStart, onSave }) {
         </div>
         <p className="text-xs text-slate-300 mt-2">
           <span className="font-bold text-white">{formatClock(totalSec)}</span> total ·{' '}
-          {workout.stats.runCount} runs · longest run {formatClock(workout.stats.longestRun)} ·{' '}
-          <span className="font-bold text-emerald-300">{workout.stats.achievedRunPct}% run</span>
+          {workout.stats.runCount} runs · longest {formatClock(workout.stats.longestRun)} ·{' '}
+          <span className="font-bold text-emerald-300">{workout.stats.achievedRunPct}% run</span> ·{' '}
+          <span className="font-semibold text-slate-200">
+            {workout.stats.startEffort}%→{workout.stats.maxEffort}% effort
+          </span>
         </p>
         {workout.notes.map((n) => (
           <p key={n} className="text-xs text-amber-300 mt-1">{n}</p>

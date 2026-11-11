@@ -125,6 +125,7 @@ class AudioManager {
     this._nativeReqId = 1;
     this._nativeCallbacks = new Map();
     this._nativeBusy = false;
+    this._nativeWorkoutStateListener = null;
 
     if (typeof window !== 'undefined') {
       window.__onNativeAudioEnded = (reqId) => {
@@ -133,6 +134,12 @@ class AudioManager {
         if (cb) {
           this._nativeCallbacks.delete(reqId);
           cb();
+        }
+      };
+
+      window.__onNativeWorkoutState = (state) => {
+        if (this._nativeWorkoutStateListener) {
+          this._nativeWorkoutStateListener(state);
         }
       };
     }
@@ -416,6 +423,73 @@ class AudioManager {
     if (this.isNativeIOS()) {
       this.sendNativeMessage({ action: 'stopWorkoutKeepAlive' });
     }
+  }
+
+  setNativeWorkoutStateListener(listener) {
+    this._nativeWorkoutStateListener = listener || null;
+  }
+
+  startNativeWorkout(workout, { isMuted = false } = {}) {
+    if (!this.isNativeIOS() || !workout || !Array.isArray(workout.intervals) || !workout.intervals.length) {
+      return false;
+    }
+    const validVoice = STUDIO_VOICES.some((v) => v.id === this.selectedVoiceURI) ? this.selectedVoiceURI : 'us-andrew';
+    const intervals = workout.intervals.map((interval, idx) => ({
+      phase: interval.phase || 'run',
+      duration: Math.max(1, Math.round(interval.duration || 60)),
+      startClips: this.getClipKeysForInterval(interval),
+      warningClip: idx < workout.intervals.length - 1
+        ? this.getWarningClipKey(workout.intervals[idx + 1])
+        : null,
+    }));
+
+    return this.sendNativeMessage({
+      action: 'startWorkout',
+      workoutTitle: workout.title || 'Workout',
+      voiceId: validVoice,
+      rate: Number(this.speechRate || 1.0),
+      volume: Number(this.speechVolume || 1.0),
+      sessionMode: this.audioSessionMode === 'transient' ? 'transient' : 'mix',
+      chimeEnabled: Boolean(this.chimeEnabled),
+      tenSecondWarningEnabled: Boolean(this.tenSecondWarningEnabled),
+      countdownEnabled: Boolean(this.countdownEnabled),
+      workoutHalfwayEnabled: Boolean(this.workoutHalfwayEnabled),
+      silentStart: Boolean(this.silentStart),
+      isMuted: Boolean(isMuted),
+      intervals,
+    });
+  }
+
+  pauseNativeWorkout() {
+    return this.sendNativeMessage({ action: 'pauseWorkout' });
+  }
+
+  resumeNativeWorkout() {
+    return this.sendNativeMessage({ action: 'resumeWorkout' });
+  }
+
+  skipNextNativeWorkout() {
+    return this.sendNativeMessage({ action: 'skipNextWorkout' });
+  }
+
+  skipPrevNativeWorkout() {
+    return this.sendNativeMessage({ action: 'skipPrevWorkout' });
+  }
+
+  addNativeWorkoutSeconds(seconds = 30) {
+    return this.sendNativeMessage({ action: 'addSecondsWorkout', seconds });
+  }
+
+  setNativeWorkoutMuted(isMuted) {
+    return this.sendNativeMessage({ action: 'setMutedWorkout', isMuted: Boolean(isMuted) });
+  }
+
+  stopNativeWorkout() {
+    return this.sendNativeMessage({ action: 'stopWorkout' });
+  }
+
+  requestNativeWorkoutState() {
+    return this.sendNativeMessage({ action: 'getWorkoutState' });
   }
 
   /**
