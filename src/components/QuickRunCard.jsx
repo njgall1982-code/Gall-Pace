@@ -1,12 +1,17 @@
 import React, { useMemo, useState } from 'react';
 import { Play, Shuffle, Save, Minus, Plus, ChevronDown, ChevronUp, Zap, Check } from 'lucide-react';
-import { generateRun, DEFAULT_PARAMS, INTENSITY_LEVELS, formatClock } from '../services/runGenerator';
+import {
+  generateRun,
+  DEFAULT_PARAMS,
+  MIN_PEAK_EFFORT,
+  MAX_PEAK_EFFORT,
+  effortBandForPeak,
+  formatClock,
+} from '../services/runGenerator';
 
 const STORAGE_KEY = 'intervalcoach_quickrun';
-const PARAMS_VERSION = 2;
+const PARAMS_VERSION = 3;
 const LENGTH_CHIPS = [15, 20, 30, 45, 60];
-const INTENSITY_ORDER = ['gentle', 'normal', 'hard'];
-const RUN_PCT_CHIPS = [25, 50, 75];
 const MAX_RUN_CHIPS = [60, 90, 120, 180, 240, 300];
 const MAX_WALK_CHIPS = [45, 60, 90, 120, 150];
 const MIN_RUN_CHIPS = [15, 30, 45, 60];
@@ -81,7 +86,7 @@ export function QuickRunCard({ onStart, onSave }) {
 
   const workout = useMemo(() => generateRun({ ...params, seed }), [params, seed]);
   const totalSec = workout.stats.totalSec;
-  const activeLevel = INTENSITY_LEVELS[params.intensity] || INTENSITY_LEVELS.normal;
+  const effortBand = effortBandForPeak(params.peakEffort);
 
   const handleShuffle = () => {
     const prevPattern = workout.intervals
@@ -152,52 +157,49 @@ export function QuickRunCard({ onStart, onSave }) {
         </div>
       </div>
 
-      {/* Intensity Level */}
-      <div>
-        <Label value={`${activeLevel.effortMin}–${activeLevel.effortMax}% effort`}>Level</Label>
-        <div className="grid grid-cols-3 gap-2">
-          {INTENSITY_ORDER.map((id) => {
-            const cfg = INTENSITY_LEVELS[id];
-            const active = params.intensity === id;
-            return (
-              <button
-                key={id}
-                type="button"
-                onClick={() => update({ intensity: id })}
-                className={`px-3 py-2 rounded-xl text-left transition-all active:scale-95 border ${
-                  active
-                    ? 'bg-emerald-500 text-slate-950 border-emerald-400'
-                    : 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700'
-                }`}
-              >
-                <div className="text-xs font-black">{cfg.label}</div>
-                <div className={`text-[10px] font-semibold ${active ? 'text-slate-900' : 'text-slate-400'}`}>
-                  {cfg.effortMin}–{cfg.effortMax}%
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
       {/* Run % */}
       <div>
         <Label value={`${params.runPct}% run / ${100 - params.runPct}% walk`}>Run vs walk</Label>
-        <input
-          type="range"
-          min={10}
-          max={90}
-          step={5}
-          value={params.runPct}
-          onChange={(e) => update({ runPct: Number(e.target.value) })}
-          className="w-full accent-emerald-500"
-        />
-        <div className="flex gap-2 mt-1">
-          {RUN_PCT_CHIPS.map((p) => (
-            <Chip key={p} active={params.runPct === p} onClick={() => update({ runPct: p })}>
-              {p}%
-            </Chip>
-          ))}
+        <div className="py-1.5">
+          <input
+            type="range"
+            aria-label="Run vs walk percentage"
+            min={10}
+            max={90}
+            step={5}
+            value={params.runPct}
+            onChange={(e) => update({ runPct: Number(e.target.value) })}
+            className="quickrun-slider w-full"
+          />
+        </div>
+        <div className="flex justify-between text-[10px] font-semibold text-slate-400">
+          <span>More walk (10%)</span>
+          <span>50/50</span>
+          <span>More run (90%)</span>
+        </div>
+      </div>
+
+      {/* Peak Effort */}
+      <div>
+        <Label value={`Starts ≤${effortBand.firstRunCap}% · Peak ${effortBand.peakEffort}%`}>
+          Peak effort
+        </Label>
+        <div className="py-1.5">
+          <input
+            type="range"
+            aria-label="Peak effort percentage"
+            min={MIN_PEAK_EFFORT}
+            max={MAX_PEAK_EFFORT}
+            step={5}
+            value={effortBand.peakEffort}
+            onChange={(e) => update({ peakEffort: Number(e.target.value) })}
+            className="quickrun-slider w-full"
+          />
+        </div>
+        <div className="flex justify-between text-[10px] font-semibold text-slate-400">
+          <span>Gentle ({MIN_PEAK_EFFORT}%)</span>
+          <span>Moderate (65%)</span>
+          <span>Hard ({MAX_PEAK_EFFORT}%)</span>
         </div>
       </div>
 

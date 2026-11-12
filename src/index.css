@@ -30,3 +30,42 @@
 .animate-flash-glow {
   animation: flash-glow 1.5s ease-in-out infinite;
 }
+
+/* Larger touch-friendly sliders for Quick Run */
+.quickrun-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 10px;
+  border-radius: 9999px;
+  background: rgb(30 41 59); /* slate-800 */
+  border: 1px solid rgb(51 65 85); /* slate-700 */
+  outline: none;
+  cursor: pointer;
+}
+
+.quickrun-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 9999px;
+  background: rgb(16 185 129); /* emerald-500 */
+  border: 2px solid rgb(236 253 245); /* emerald-50 */
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  transition: transform 0.1s ease;
+}
+
+.quickrun-slider::-webkit-slider-thumb:active {
+  transform: scale(1.1);
+}
+
+.quickrun-slider::-moz-range-thumb {
+  width: 26px;
+  height: 26px;
+  border-radius: 9999px;
+  background: rgb(16 185 129);
+  border: 2px solid rgb(236 253 245);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+}

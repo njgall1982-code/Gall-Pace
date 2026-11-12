@@ -16,45 +16,48 @@ export const WARMUP_SEC = 120;
 export const COOLDOWN_SEC = 120;
 export const RUN_EFFORT = 55;
 export const MAX_RUN_HARD_CAP = 300; // longest voice clip
+export const MIN_PEAK_EFFORT = 45;
+export const MAX_PEAK_EFFORT = 85;
+export const DEFAULT_PEAK_EFFORT = 65;
 
 export const INTENSITY_LEVELS = {
   gentle: {
     id: 'gentle',
     label: 'Gentle',
-    description: 'Easy jogs, softer ramp (30–50%)',
+    peakEffort: 50,
     effortMin: 30,
     effortMax: 50,
     firstRunCap: 35,
     secondRunCap: 45,
-    baseRange: [33, 43],
-    surgeDelta: 4,
-    durBoostMax: 0,
   },
   normal: {
     id: 'normal',
     label: 'Normal',
-    description: 'Gradual build, steady pace (35–65%)',
+    peakEffort: 65,
     effortMin: 35,
     effortMax: 65,
     firstRunCap: 40,
     secondRunCap: 50,
-    baseRange: [44, 56],
-    surgeDelta: 8,
-    durBoostMax: 5,
   },
   hard: {
     id: 'hard',
     label: 'Hard',
-    description: 'Easy start, stronger push (40–80%)',
+    peakEffort: 80,
     effortMin: 40,
     effortMax: 80,
     firstRunCap: 40,
     secondRunCap: 55,
-    baseRange: [52, 68],
-    surgeDelta: 12,
-    durBoostMax: 5,
   },
 };
+
+export function effortBandForPeak(peakEffort) {
+  const peak = clamp(Math.round(peakEffort / 5) * 5, MIN_PEAK_EFFORT, MAX_PEAK_EFFORT);
+  const effortMin = peak <= 50 ? 30 : peak <= 65 ? 35 : 40;
+  const firstRunCap = Math.min(peak, peak <= 50 ? 35 : 40);
+  const secondRunCap = Math.min(peak, peak <= 50 ? 45 : peak <= 65 ? 50 : 55);
+  const label = peak <= 55 ? 'Gentle' : peak <= 70 ? 'Moderate' : 'Hard';
+  return { peakEffort: peak, effortMin, effortMax: peak, firstRunCap, secondRunCap, label };
+}
 
 export const ARCHETYPES = {
   snappy: { id: 'snappy', label: 'Snappy Repeats' },
@@ -65,60 +68,68 @@ export const ARCHETYPES = {
 
 /**
  * Calculates a gradual, adult-friendly effort progression for runs and walks.
- * - Enforces an easy on-ramp: Run 1 is always capped (<= 40% default, <= 35% gentle),
+ * - Enforces an easy on-ramp: Run 1 is always capped (<= 40%, or <= 35% for gentle peaks),
  *   and Run 2 stays conservative so workouts never spike straight out of warm-up.
- * - Intensity level ('gentle' | 'normal' | 'hard') sets the effort ceiling and slope.
- * - Overall runPct gently nudges base effort within the chosen intensity's band.
+ * - `peakEffortOrIntensity` accepts a numeric peak effort (45..85) or legacy level name.
+ * - `runPct` gently nudges the mid-workout floor within the chosen effort band.
  */
-export function calculateEffortArc(runs, walks, runPct, rng, intensity = 'normal') {
+export function calculateEffortArc(runs, walks, runPct, rng, peakEffortOrIntensity = DEFAULT_PEAK_EFFORT) {
   const n = runs.length;
   if (!n) return { runEfforts: [], walkNames: [] };
 
-  const cfg = INTENSITY_LEVELS[intensity] || INTENSITY_LEVELS.normal;
+  const requestedPeak = typeof peakEffortOrIntensity === 'string'
+    ? (INTENSITY_LEVELS[peakEffortOrIntensity]?.peakEffort ?? DEFAULT_PEAK_EFFORT)
+    : Number.isFinite(peakEffortOrIntensity)
+      ? peakEffortOrIntensity
+      : DEFAULT_PEAK_EFFORT;
+
+  const band = effortBandForPeak(requestedPeak);
+  const { effortMin, effortMax, firstRunCap, secondRunCap } = band;
+  const span = Math.max(5, effortMax - effortMin);
   const pctNorm = clamp((runPct - 10) / 80, 0, 1);
-  const baseEffort = cfg.baseRange[0] + pctNorm * (cfg.baseRange[1] - cfg.baseRange[0]);
+  // Higher run% nudges the cruising effort up slightly, without overriding the on-ramp or peak cap.
+  const pctBias = (pctNorm - 0.5) * 6;
 
   // Available effort steps in voice clips: 30..95 in steps of 5
-  const snapEffort = (val, lo = cfg.effortMin, hi = cfg.effortMax) =>
+  const snapEffort = (val, lo = effortMin, hi = effortMax) =>
     clamp(Math.round(val / 5) * 5, lo, hi);
 
   // Progression shape per shuffle seed:
-  // 0: Gradual Ramp (starts low, builds steadily toward final third)
-  // 1: Gentle Pyramid (starts low, peaks in middle, eases off slightly at finish)
-  // 2: Rolling Surges (alternates steady and slightly firmer pushes after warm-in)
+  // 0: Gradual Ramp (starts easy, builds steadily toward peak)
+  // 1: Gentle Pyramid (starts easy, peaks in middle, eases slightly at finish)
+  // 2: Rolling Surges (alternates steady and firmer pushes after on-ramp)
   const styleRoll = rng ? Math.floor(rng() * 3) : 0;
 
   const runEfforts = runs.map((dur, i) => {
     const progress = n > 1 ? i / (n - 1) : 0;
-    let curveDelta = 0;
+    let targetFrac = 0.5;
 
     if (styleRoll === 0) {
-      curveDelta = (progress - 0.35) * (cfg.surgeDelta * 1.8);
+      targetFrac = 0.25 + progress * 0.75;
     } else if (styleRoll === 1) {
-      curveDelta = Math.sin(progress * Math.PI) * (cfg.surgeDelta * 1.4) - cfg.surgeDelta * 0.4;
+      targetFrac = 0.2 + Math.sin(progress * Math.PI) * 0.8;
     } else {
-      const wave = i >= 2 && i % 2 === 1 ? cfg.surgeDelta * 0.7 : -cfg.surgeDelta * 0.3;
-      curveDelta = wave + progress * (cfg.surgeDelta * 0.8);
+      const wave = i >= 2 && i % 2 === 1 ? 0.22 : -0.12;
+      targetFrac = clamp(0.3 + progress * 0.55 + wave, 0.1, 1);
     }
 
-    // Duration modifier only applies AFTER the first two on-ramp intervals,
+    // Duration adjustment only applies AFTER the first two on-ramp intervals,
     // so short 15-min runs never spike to high effort right after warm-up.
     let durModifier = 0;
     if (i >= 2) {
-      if (dur <= 30) durModifier = cfg.durBoostMax;
+      if (dur <= 30 && effortMax >= 60) durModifier = 5;
       else if (dur >= 240) durModifier = -10;
       else if (dur >= 180) durModifier = -5;
     }
 
     const jitter = rng ? (rng() - 0.5) * 5 : 0;
-    let hiCap = cfg.effortMax;
-    if (i === 0) hiCap = Math.min(hiCap, cfg.firstRunCap);
-    else if (i === 1) hiCap = Math.min(hiCap, cfg.secondRunCap);
+    let hiCap = effortMax;
+    if (i === 0) hiCap = Math.min(hiCap, firstRunCap);
+    else if (i === 1) hiCap = Math.min(hiCap, secondRunCap);
 
-    // Ensure Run 1 starts gently even if baseEffort is toward the top of the band.
-    const onRampBias = i === 0 ? -10 : i === 1 ? -5 : 0;
-    const raw = baseEffort + onRampBias + curveDelta + durModifier + jitter;
-    return snapEffort(raw, cfg.effortMin, hiCap);
+    const baseTarget = effortMin + targetFrac * span;
+    const raw = baseTarget + pctBias + durModifier + jitter;
+    return snapEffort(raw, effortMin, hiCap);
   });
 
   // Walk naming & style
@@ -126,7 +137,7 @@ export function calculateEffortArc(runs, walks, runPct, rng, intensity = 'normal
     const precedingRunEffort = runEfforts[i] || 50;
     const precedingRunDur = runs[i] || 60;
     const isHard = precedingRunEffort >= 65 || precedingRunDur >= 120;
-    return isHard ? 'Recovery Walk' : intensity === 'gentle' ? 'Easy Walk' : 'Brisk Walk';
+    return isHard ? 'Recovery Walk' : effortMax <= 55 ? 'Easy Walk' : 'Brisk Walk';
   });
 
   return { runEfforts, walkNames };
@@ -140,7 +151,7 @@ const SHORTEST_ALLOWED = 15;
 export const DEFAULT_PARAMS = {
   totalMin: 20,
   runPct: 50,          // 10..90
-  intensity: 'normal', // 'gentle' | 'normal' | 'hard'
+  peakEffort: DEFAULT_PEAK_EFFORT, // 45..85 in steps of 5
   maxRunSec: 90,
   maxWalkSec: 90,
   allowLongRuns: false, // true lifts the run cap to MAX_RUN_HARD_CAP
@@ -481,7 +492,12 @@ export function normalizeParams(input = {}) {
   const p = { ...DEFAULT_PARAMS, ...input };
   p.totalMin = clamp(Math.round(p.totalMin), 10, 90);
   p.runPct = clamp(Math.round(p.runPct), 10, 90);
-  p.intensity = INTENSITY_LEVELS[p.intensity] ? p.intensity : DEFAULT_PARAMS.intensity;
+  const rawPeak = Number.isFinite(input.peakEffort)
+    ? input.peakEffort
+    : input.intensity && INTENSITY_LEVELS[input.intensity]
+      ? INTENSITY_LEVELS[input.intensity].peakEffort
+      : DEFAULT_PARAMS.peakEffort;
+  p.peakEffort = clamp(Math.round(rawPeak / 5) * 5, MIN_PEAK_EFFORT, MAX_PEAK_EFFORT);
   p.maxRunSec = clamp(Math.round(p.maxRunSec), 60, MAX_RUN_HARD_CAP);
   p.maxWalkSec = clamp(Math.round(p.maxWalkSec), 45, 150);
   p.minRunSec = clamp(Math.round(p.minRunSec), SHORTEST_ALLOWED, Math.min(p.maxRunSec, 120));
@@ -490,7 +506,7 @@ export function normalizeParams(input = {}) {
 }
 
 /**
- * generateRun({ totalMin, runPct, intensity, maxRunSec, maxWalkSec,
+ * generateRun({ totalMin, runPct, peakEffort, maxRunSec, maxWalkSec,
  *               allowLongRuns, longerRunsInMiddle, walkScaling, seed })
  */
 export function generateRun(input = {}) {
@@ -520,7 +536,7 @@ export function generateRun(input = {}) {
     result.walks,
     params.runPct,
     cueRng,
-    params.intensity,
+    params.peakEffort,
   );
 
   const intervals = [
@@ -579,7 +595,7 @@ export function generateRun(input = {}) {
   const minEffort = runEfforts.length ? Math.min(...runEfforts) : RUN_EFFORT;
   const maxEffort = runEfforts.length ? Math.max(...runEfforts) : RUN_EFFORT;
   const startEffort = runEfforts[0] || RUN_EFFORT;
-  const intensityCfg = INTENSITY_LEVELS[params.intensity] || INTENSITY_LEVELS.normal;
+  const band = effortBandForPeak(params.peakEffort);
   const archetypeCfg = ARCHETYPES[result.archetype] || ARCHETYPES.pyramid;
 
   const notes = [];
@@ -592,13 +608,13 @@ export function generateRun(input = {}) {
 
   return {
     id,
-    title: `${params.totalMin} min · ${intensityCfg.label} · ${achievedRunPct}% run`,
+    title: `${params.totalMin} min · ${achievedRunPct}% run · up to ${params.peakEffort}%`,
     subtitle: `Quick Run · ${archetypeCfg.label}`,
-    description: `Generated ${intensityCfg.label.toLowerCase()} run/walk mix: ${result.runs.length} runs (${startEffort}%–${maxEffort}% effort), longest ${formatClock(longestRun)}.`,
-    level: intensityCfg.label,
+    description: `Generated ${band.label.toLowerCase()} run/walk mix: ${result.runs.length} runs (${startEffort}%–${maxEffort}% effort), longest ${formatClock(longestRun)}.`,
+    level: band.label,
     category: 'Generated',
     accentColor: 'emerald',
-    tags: ['Generated', intensityCfg.label, `${params.totalMin} Mins`],
+    tags: ['Generated', band.label, `${params.totalMin} Mins`],
     generated: true,
     params: { ...params, seed },
     stats: {
@@ -611,7 +627,7 @@ export function generateRun(input = {}) {
       minEffort,
       maxEffort,
       startEffort,
-      intensity: params.intensity,
+      peakEffort: params.peakEffort,
       archetype: result.archetype,
       archetypeLabel: archetypeCfg.label,
       exact: result.ok,

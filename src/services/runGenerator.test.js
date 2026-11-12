@@ -4,6 +4,7 @@ import {
   generateRun,
   DEFAULT_PARAMS,
   INTENSITY_LEVELS,
+  effortBandForPeak,
   CLIP_DURATIONS,
   WARMUP_SEC,
   COOLDOWN_SEC,
@@ -103,46 +104,49 @@ test('default-ish settings: run % close to request and middle runs longest', () 
   assert.ok(mid > first);
 });
 
-test('adult-friendly defaults: 20 min, 50% run, max 90s run, normal intensity', () => {
+test('adult-friendly defaults: 20 min, 50% run, max 90s run, 65% peak effort', () => {
   assert.equal(DEFAULT_PARAMS.totalMin, 20);
   assert.equal(DEFAULT_PARAMS.runPct, 50);
   assert.equal(DEFAULT_PARAMS.maxRunSec, 90);
-  assert.equal(DEFAULT_PARAMS.intensity, 'normal');
+  assert.equal(DEFAULT_PARAMS.peakEffort, 65);
 
   const w = generateRun({ seed: 101 });
   assert.equal(w.stats.totalSec, 20 * 60);
   assert.ok(Math.abs(w.stats.achievedRunPct - 50) <= 3);
   assert.ok(runsOf(w).every((d) => d <= 90));
-  assert.equal(w.level, 'Normal');
+  assert.equal(w.level, 'Moderate');
 });
 
-test('gradual effort ramp: Run 1 never exceeds 40% (35% on Gentle), even on 15 min runs', () => {
-  for (const intensity of ['gentle', 'normal', 'hard']) {
-    const cfg = INTENSITY_LEVELS[intensity];
+test('gradual effort ramp: Run 1 never exceeds 40% (35% when peak <= 50%), across all peakEfforts', () => {
+  for (const peakEffort of [45, 50, 55, 60, 65, 70, 75, 80, 85]) {
+    const band = effortBandForPeak(peakEffort);
     for (const totalMin of [15, 20, 30, 45]) {
       for (const runPct of [25, 50, 75]) {
         for (const seed of [1, 7, 19, 42, 99]) {
-          const w = generateRun({ totalMin, runPct, intensity, seed });
+          const w = generateRun({ totalMin, runPct, peakEffort, seed });
           const runs = runIntervalsOf(w);
           const firstEffort = runs[0].effort;
           assert.ok(
-            firstEffort <= cfg.firstRunCap,
-            `${intensity} ${totalMin}m ${runPct}% seed=${seed}: Run 1 effort ${firstEffort}% exceeded ${cfg.firstRunCap}%`,
+            firstEffort <= band.firstRunCap,
+            `peak=${peakEffort} ${totalMin}m ${runPct}% seed=${seed}: Run 1 effort ${firstEffort}% exceeded ${band.firstRunCap}%`,
           );
           if (runs.length > 1) {
             assert.ok(
-              runs[1].effort <= cfg.secondRunCap,
-              `${intensity} ${totalMin}m ${runPct}% seed=${seed}: Run 2 effort ${runs[1].effort}% exceeded ${cfg.secondRunCap}%`,
+              runs[1].effort <= band.secondRunCap,
+              `peak=${peakEffort} ${totalMin}m ${runPct}% seed=${seed}: Run 2 effort ${runs[1].effort}% exceeded ${band.secondRunCap}%`,
             );
           }
           assert.ok(
-            runs.every((r) => r.effort >= cfg.effortMin && r.effort <= cfg.effortMax),
-            `${intensity} efforts out of [${cfg.effortMin}, ${cfg.effortMax}]: ${runs.map((r) => r.effort)}`,
+            runs.every((r) => r.effort >= band.effortMin && r.effort <= band.effortMax),
+            `peak=${peakEffort} efforts out of [${band.effortMin}, ${band.effortMax}]: ${runs.map((r) => r.effort)}`,
           );
         }
       }
     }
   }
+  // Legacy intensity option still maps cleanly
+  const gentleW = generateRun({ totalMin: 20, intensity: 'gentle', seed: 7 });
+  assert.equal(gentleW.stats.peakEffort, INTENSITY_LEVELS.gentle.peakEffort);
 });
 
 test('drastic shuffle: seeds vary interval count and pacing archetype on short & default runs', () => {
