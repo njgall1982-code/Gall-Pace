@@ -5,9 +5,8 @@ import {
   DEFAULT_PARAMS,
   INTENSITY_LEVELS,
   effortBandForPeak,
+  phaseDurationsForParams,
   CLIP_DURATIONS,
-  WARMUP_SEC,
-  COOLDOWN_SEC,
 } from './runGenerator.js';
 
 const mains = (w) => w.intervals.slice(1, -1);
@@ -43,13 +42,14 @@ test('same seed gives identical workout, different seed usually differs', () => 
   assert.ok(variants.size > 3);
 });
 
-test('structure: 2 min warm-up first, 2 min cooldown last, starts and ends main block on a run', () => {
+test('structure: dynamic warm-up first, dynamic cooldown last, starts and ends main block on a run', () => {
   const w = generateRun({ totalMin: 30, runPct: 50, seed: 5 });
+  const expectedPhases = phaseDurationsForParams(30, DEFAULT_PARAMS.peakEffort);
   assert.equal(w.intervals[0].phase, 'warmup');
-  assert.equal(w.intervals[0].duration, WARMUP_SEC);
+  assert.equal(w.intervals[0].duration, expectedPhases.warmupSec);
   const last = w.intervals.at(-1);
   assert.equal(last.phase, 'cooldown');
-  assert.equal(last.duration, COOLDOWN_SEC);
+  assert.equal(last.duration, expectedPhases.cooldownSec);
   const m = mains(w);
   assert.equal(m[0].phase, 'run');
   assert.equal(m.at(-1).phase, 'run');
@@ -166,6 +166,42 @@ test('drastic shuffle: seeds vary interval count and pacing archetype on short &
     );
     assert.ok(archetypes.size >= 3, `${totalMin}m expected >=3 archetypes, got ${[...archetypes]}`);
   }
+});
+
+test('healthy workout routine: dynamic warmup/cooldown, finish taper, walk cue match, and recovery floor', () => {
+  // Long & hard sessions get 5 min warm-up and 5 min cool-down
+  const hardLong = generateRun({ totalMin: 45, runPct: 60, peakEffort: 80, seed: 7 });
+  assert.equal(hardLong.intervals[0].duration, 300);
+  assert.equal(hardLong.intervals.at(-1).duration, 300);
+
+  // Finish-line taper: on >=4 runs at >=65% peak, final run stays below peakEffort
+  for (let s = 1; s <= 20; s++) {
+    const w = generateRun({ totalMin: 30, runPct: 50, peakEffort: 80, seed: s });
+    const runs = runIntervalsOf(w);
+    if (runs.length >= 4) {
+      assert.ok(runs.at(-1).effort < 80, `seed=${s} final run hit ${runs.at(-1).effort}%`);
+    }
+  }
+
+  // Recovery Walk intervals never get "Brisk walk" cues
+  for (let s = 1; s <= 20; s++) {
+    const w = generateRun({ totalMin: 30, runPct: 50, peakEffort: 80, seed: s });
+    for (const iv of w.intervals.filter((x) => x.phase === 'walk')) {
+      if (iv.name.startsWith('Recovery Walk')) {
+        assert.ok(!/brisk walk/i.test(iv.cue), `Recovery Walk got brisk cue: ${iv.cue}`);
+      }
+    }
+  }
+
+  // High-effort (peak >= 75%) with <= 75% run enforces >= 30s walk floor
+  const hiit = generateRun({ totalMin: 20, runPct: 50, peakEffort: 80, minWalkSec: 15, seed: 12 });
+  assert.ok(walksOf(hiit).every((d) => d >= 30), `expected >=30s walks, got ${walksOf(hiit)}`);
+  assert.ok(hiit.notes.some((n) => /30s/.test(n)));
+
+  // effortBandForPeak includes zoneLabel and talkTest
+  const zone2 = effortBandForPeak(55);
+  assert.match(zone2.zoneLabel, /Zone 2/i);
+  assert.ok(zone2.talkTest.length > 0);
 });
 
 

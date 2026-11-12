@@ -5,7 +5,7 @@
  * Produces the standard workout object (intervals[] of { id, phase, name,
  * duration, effort, cue }) so RunningScreen / audioManager work unchanged.
  *
- * Layout: 2 min warm-up, main block (R W R W ... R), 2 min cooldown.
+ * Layout: 2 min warm-up, main block (R W R W ... R), 1 min cooldown.
  * "Run %" is the share of the MAIN block (warm-up/cooldown excluded) spent running.
  */
 
@@ -13,12 +13,37 @@
 export const CLIP_DURATIONS = [15, 30, 45, 60, 75, 90, 105, 120, 150, 180, 240, 300];
 
 export const WARMUP_SEC = 120;
-export const COOLDOWN_SEC = 120;
+export const COOLDOWN_SEC = 60;
 export const RUN_EFFORT = 55;
 export const MAX_RUN_HARD_CAP = 300; // longest voice clip
 export const MIN_PEAK_EFFORT = 45;
 export const MAX_PEAK_EFFORT = 85;
 export const DEFAULT_PEAK_EFFORT = 65;
+
+/**
+ * Scale warm-up and cool-down durations to session length and peak effort,
+ * using durations that have dedicated Studio Neural clips (60, 120, 180, 300s).
+ */
+export function phaseDurationsForParams(totalMin, peakEffort) {
+  const peak = clamp(Math.round(peakEffort / 5) * 5, MIN_PEAK_EFFORT, MAX_PEAK_EFFORT);
+  if (totalMin <= 15) {
+    return {
+      warmupSec: 120,
+      cooldownSec: peak >= 75 ? 120 : 60,
+    };
+  }
+  if (totalMin < 40) {
+    return {
+      warmupSec: peak >= 75 ? 180 : 120,
+      cooldownSec: peak >= 70 ? 180 : 120,
+    };
+  }
+  const longOrHard = peak >= 75 || totalMin >= 60;
+  return {
+    warmupSec: longOrHard ? 300 : 180,
+    cooldownSec: longOrHard ? 300 : 180,
+  };
+}
 
 export const INTENSITY_LEVELS = {
   gentle: {
@@ -56,7 +81,17 @@ export function effortBandForPeak(peakEffort) {
   const firstRunCap = Math.min(peak, peak <= 50 ? 35 : 40);
   const secondRunCap = Math.min(peak, peak <= 50 ? 45 : peak <= 65 ? 50 : 55);
   const label = peak <= 55 ? 'Gentle' : peak <= 70 ? 'Moderate' : 'Hard';
-  return { peakEffort: peak, effortMin, effortMax: peak, firstRunCap, secondRunCap, label };
+  const zoneLabel = peak <= 55
+    ? 'Aerobic / Zone 2'
+    : peak <= 70
+      ? 'Tempo / Comfortably Hard'
+      : 'Vigorous / Intervals';
+  const talkTest = peak <= 55
+    ? 'Conversational pace — speak in full sentences'
+    : peak <= 70
+      ? 'Short phrases — steady, controlled breathing'
+      : '1–2 words max — best 1–2× per week';
+  return { peakEffort: peak, effortMin, effortMax: peak, firstRunCap, secondRunCap, label, zoneLabel, talkTest };
 }
 
 export const ARCHETYPES = {
@@ -122,10 +157,17 @@ export function calculateEffortArc(runs, walks, runPct, rng, peakEffortOrIntensi
       else if (dur >= 180) durModifier = -5;
     }
 
+    // Taper the final run slightly on multi-interval workouts so the athlete
+    // begins transitioning toward cool-down rather than peaking at the buzzer.
+    if (n >= 4 && i === n - 1 && effortMax >= 65) {
+      targetFrac = Math.min(targetFrac, 0.72);
+    }
+
     const jitter = rng ? (rng() - 0.5) * 5 : 0;
     let hiCap = effortMax;
     if (i === 0) hiCap = Math.min(hiCap, firstRunCap);
     else if (i === 1) hiCap = Math.min(hiCap, secondRunCap);
+    else if (n >= 4 && i === n - 1 && effortMax >= 65) hiCap = Math.min(hiCap, effortMax - 5);
 
     const baseTarget = effortMin + targetFrac * span;
     const raw = baseTarget + pctBias + durModifier + jitter;
@@ -405,7 +447,9 @@ function breakTriples(segs) {
 }
 function buildOnce(params, main, rng) {
   const runCap = params.allowLongRuns ? MAX_RUN_HARD_CAP : Math.min(params.maxRunSec, MAX_RUN_HARD_CAP);
-  const minWalk = params.minWalkSec;
+  const enforceRecoveryFloor = params.peakEffort >= 75 && params.runPct <= 75 && params.maxWalkSec >= 30;
+  const minWalk = enforceRecoveryFloor ? Math.max(params.minWalkSec, 30) : params.minWalkSec;
+  const bumpedMinWalk = minWalk > params.minWalkSec;
   const walkCap = Math.max(minWalk, params.maxWalkSec);
   const runTarget = round15(main * (params.runPct / 100));
   const archetype = pickArchetype(params, rng);
@@ -480,6 +524,7 @@ function buildOnce(params, main, rng) {
     runs: runs.map((s) => s.dur),
     walks: walks.map((s) => s.dur),
     relaxedWalk,
+    bumpedMinWalk,
     runCap,
     walkCap,
     archetype,
@@ -512,7 +557,8 @@ export function normalizeParams(input = {}) {
 export function generateRun(input = {}) {
   const seed = Number.isFinite(input.seed) ? input.seed : Math.floor(Math.random() * 1e9);
   const params = normalizeParams(input);
-  const main = params.totalMin * 60 - WARMUP_SEC - COOLDOWN_SEC;
+  const { warmupSec, cooldownSec } = phaseDurationsForParams(params.totalMin, params.peakEffort);
+  const main = params.totalMin * 60 - warmupSec - cooldownSec;
 
   // Retry with derived seeds until exact and no three identical segments in a row.
   let result = null;
@@ -541,8 +587,8 @@ export function generateRun(input = {}) {
 
   const intervals = [
     {
-      id: `${id}-warmup`, phase: 'warmup', name: 'Warm-up Walk', duration: WARMUP_SEC, effort: null,
-      cue: `Starting with a ${WARMUP_SEC / 60} minute warm up walk. Relax your shoulders and find a steady stride.`,
+      id: `${id}-warmup`, phase: 'warmup', name: 'Warm-up Walk', duration: warmupSec, effort: null,
+      cue: `Starting with a ${warmupSec / 60} minute warm up walk. Relax your shoulders and find a steady stride.`,
     },
   ];
 
@@ -551,12 +597,20 @@ export function generateRun(input = {}) {
     (d, eff) => `Time to run. ${d} at ${eff} percent effort.`,
     (d, eff) => `Let's go! Run for ${d} at ${eff} percent effort.`,
   ];
-  const walkCueFns = [
-    (d) => `Walk and catch your breath for ${d}.`,
-    (d) => `Recovery walk for ${d}.`,
-    (d) => `Easy walk for ${d}. Shake it out.`,
-    (d) => `Brisk walk for ${d}. Keep the rhythm going.`,
-  ];
+  const walkCueByStyle = {
+    'Recovery Walk': [
+      (d) => `Recovery walk for ${d}. Slow your pace and catch your breath.`,
+      (d) => `Walk and catch your breath for ${d}. Let your heart rate drop.`,
+    ],
+    'Easy Walk': [
+      (d) => `Easy walk for ${d}. Shake it out.`,
+      (d) => `Walk and catch your breath for ${d}.`,
+    ],
+    'Brisk Walk': [
+      (d) => `Brisk walk for ${d}. Keep the rhythm going.`,
+      (d) => `Easy walk for ${d}. Stay tall and relaxed.`,
+    ],
+  };
 
   result.runs.forEach((dur, i) => {
     const eff = runEfforts[i] || RUN_EFFORT;
@@ -571,20 +625,21 @@ export function generateRun(input = {}) {
     });
     if (i < result.walks.length) {
       const walkName = walkNames[i] || 'Recovery Walk';
+      const cuePool = walkCueByStyle[walkName] || walkCueByStyle['Recovery Walk'];
       intervals.push({
         id: `${id}-walk-${i + 1}`,
         phase: 'walk',
         name: `${walkName} ${i + 1}`,
         duration: result.walks[i],
         effort: null,
-        cue: pick(walkCueFns)(durationWords(result.walks[i])),
+        cue: pick(cuePool)(durationWords(result.walks[i])),
       });
     }
   });
 
   intervals.push({
-    id: `${id}-cooldown`, phase: 'cooldown', name: 'Cool Down Walk', duration: COOLDOWN_SEC, effort: null,
-    cue: `Great job! ${COOLDOWN_SEC / 60} minute cool down walk. Let your heart rate recover.`,
+    id: `${id}-cooldown`, phase: 'cooldown', name: 'Cool Down Walk', duration: cooldownSec, effort: null,
+    cue: `Great job! ${cooldownSec / 60} minute cool down walk. Let your heart rate recover.`,
   });
 
   const runSec = sum(result.runs);
@@ -599,6 +654,11 @@ export function generateRun(input = {}) {
   const archetypeCfg = ARCHETYPES[result.archetype] || ARCHETYPES.pyramid;
 
   const notes = [];
+  if (result.bumpedMinWalk) {
+    notes.push('Raised shortest walk to 30s to support heart-rate recovery at high effort.');
+  } else if (params.peakEffort >= 75 && params.minWalkSec < 30 && result.walks.some((w) => w < 30)) {
+    notes.push('Short walks (<30s) at high effort limit recovery; consider 30–45s walks.');
+  }
   if (result.relaxedWalk) {
     notes.push('Some walks run longer than your max walk to fit this mix. Raise max walk or lower run % to avoid that.');
   } else if (Math.abs(achievedRunPct - params.runPct) > 3) {

@@ -598,6 +598,7 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
 
         if !isMuted,
            config.tenSecondWarningEnabled,
+           currentBlockTotal > 30,
            computedRemaining <= 10,
            computedRemaining >= 8,
            !announcedTenSec,

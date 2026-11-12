@@ -212,10 +212,11 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
           audioManager.speakWorkoutHalfway();
         }
 
-        // 10-Second Warning Cue
+        // 10-Second Warning Cue (skip on short <= 30s intervals)
         if (
           !muted &&
           audioManager.tenSecondWarningEnabled &&
+          currentBlockTotal > 30 &&
           remaining <= 10 &&
           remaining >= 8 &&
           !cueStateRef.current.announcedTenSec &&

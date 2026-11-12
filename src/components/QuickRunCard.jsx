@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Play, Shuffle, Save, Minus, Plus, ChevronDown, ChevronUp, Zap, Check } from 'lucide-react';
+import { Play, Shuffle, Save, Minus, Plus, ChevronDown, ChevronUp, Zap, Check, HeartPulse } from 'lucide-react';
 import {
   generateRun,
   DEFAULT_PARAMS,
@@ -8,6 +8,7 @@ import {
   effortBandForPeak,
   formatClock,
 } from '../services/runGenerator';
+import { storageService } from '../services/storage';
 
 const STORAGE_KEY = 'intervalcoach_quickrun';
 const PARAMS_VERSION = 3;
@@ -16,6 +17,84 @@ const MAX_RUN_CHIPS = [60, 90, 120, 180, 240, 300];
 const MAX_WALK_CHIPS = [45, 60, 90, 120, 150];
 const MIN_RUN_CHIPS = [15, 30, 45, 60];
 const MIN_WALK_CHIPS = [15, 30, 45];
+
+const QUICK_RUN_PRESETS = [
+  {
+    id: 'aerobic-base',
+    label: 'Aerobic Base',
+    params: {
+      totalMin: 30,
+      runPct: 70,
+      peakEffort: 55,
+      maxRunSec: 240,
+      allowLongRuns: true,
+      minRunSec: 60,
+      minWalkSec: 30,
+      maxWalkSec: 60,
+      longerRunsInMiddle: true,
+      walkScaling: 'scaled',
+    },
+  },
+  {
+    id: 'walk-run',
+    label: 'Walk-Run',
+    params: {
+      totalMin: 20,
+      runPct: 50,
+      peakEffort: 55,
+      maxRunSec: 90,
+      allowLongRuns: false,
+      minRunSec: 30,
+      minWalkSec: 30,
+      maxWalkSec: 90,
+      longerRunsInMiddle: true,
+      walkScaling: 'scaled',
+    },
+  },
+  {
+    id: 'cardio-surge',
+    label: 'Cardio Surge',
+    params: {
+      totalMin: 20,
+      runPct: 50,
+      peakEffort: 80,
+      maxRunSec: 90,
+      allowLongRuns: false,
+      minRunSec: 30,
+      minWalkSec: 45,
+      maxWalkSec: 90,
+      longerRunsInMiddle: true,
+      walkScaling: 'scaled',
+    },
+  },
+  {
+    id: 'recovery',
+    label: 'Recovery',
+    params: {
+      totalMin: 15,
+      runPct: 45,
+      peakEffort: 45,
+      maxRunSec: 60,
+      allowLongRuns: false,
+      minRunSec: 30,
+      minWalkSec: 30,
+      maxWalkSec: 60,
+      longerRunsInMiddle: false,
+      walkScaling: 'even',
+    },
+  },
+];
+
+function wasRecentHardWorkout() {
+  const latest = storageService.getHistory()[0];
+  if (!latest?.date) return false;
+  const ageMs = Date.now() - new Date(latest.date).getTime();
+  if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > 36 * 60 * 60 * 1000) return false;
+  if (Number.isFinite(latest.peakEffort) && latest.peakEffort >= 75) return true;
+  const match = /up to (\d+)%/i.exec(latest.title || '');
+  if (match && Number(match[1]) >= 75) return true;
+  return /hiit|quick burn/i.test(latest.title || '');
+}
 
 const PHASE_BAR = {
   warmup: 'bg-amber-500',
@@ -70,6 +149,8 @@ export function QuickRunCard({ onStart, onSave }) {
   const [seed, setSeed] = useState(() => Math.floor(Math.random() * 1e9));
   const [showTweaks, setShowTweaks] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [nudgeDismissed, setNudgeDismissed] = useState(false);
+  const recentHard = useMemo(() => wasRecentHardWorkout(), []);
 
   const update = (patch) => {
     setParams((prev) => {
@@ -127,6 +208,47 @@ export function QuickRunCard({ onStart, onSave }) {
             {workout.stats.archetypeLabel}
           </span>
         )}
+      </div>
+
+      {recentHard && !nudgeDismissed && params.peakEffort >= 65 && (
+        <div className="flex items-center justify-between gap-2 bg-cyan-950/60 border border-cyan-500/30 rounded-xl px-3 py-2 text-xs text-cyan-100">
+          <div className="flex items-center gap-2">
+            <HeartPulse className="w-4 h-4 text-cyan-400 shrink-0" />
+            <span>Hard session recently — an easy aerobic or recovery day helps adaptation.</span>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => update(QUICK_RUN_PRESETS[3].params)}
+              className="px-2 py-1 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-200 font-bold"
+            >
+              Recovery
+            </button>
+            <button
+              type="button"
+              aria-label="Dismiss recovery suggestion"
+              onClick={() => setNudgeDismissed(true)}
+              className="px-1.5 py-1 text-slate-400 hover:text-white"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Goal Presets */}
+      <div>
+        <Label>Goal preset</Label>
+        <div className="flex items-center gap-2 flex-wrap">
+          {QUICK_RUN_PRESETS.map((preset) => {
+            const isActive = Object.entries(preset.params).every(([k, v]) => params[k] === v);
+            return (
+              <Chip key={preset.id} active={isActive} onClick={() => update(preset.params)}>
+                {preset.label}
+              </Chip>
+            );
+          })}
+        </div>
       </div>
 
       {/* Length */}
@@ -201,6 +323,9 @@ export function QuickRunCard({ onStart, onSave }) {
           <span>Moderate (65%)</span>
           <span>Hard ({MAX_PEAK_EFFORT}%)</span>
         </div>
+        <p className="text-[11px] text-slate-300 mt-1">
+          <span className="font-bold text-emerald-300">{effortBand.zoneLabel}</span> · {effortBand.talkTest}
+        </p>
       </div>
 
       {/* Tweaks */}
