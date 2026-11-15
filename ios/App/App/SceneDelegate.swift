@@ -355,9 +355,10 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
         }
 
         notifyWorkoutState()
+        WatchSessionManager.shared.launchWatchApp()
     }
 
-    private func handlePauseWorkout() {
+    func handlePauseWorkout() {
         guard isWorkoutRunning, !isWorkoutPaused else { return }
         if let endTime = blockEndTime {
             let remaining = max(0, Int(ceil(endTime.timeIntervalSinceNow)))
@@ -383,7 +384,7 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
         notifyWorkoutState()
     }
 
-    private func handleResumeWorkout() {
+    func handleResumeWorkout() {
         guard isWorkoutRunning, isWorkoutPaused, let config = workoutConfig else { return }
         isWorkoutPaused = false
         blockEndTime = Date().addingTimeInterval(TimeInterval(secondsLeft))
@@ -399,7 +400,7 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
         notifyWorkoutState()
     }
 
-    private func handleSkipNextWorkout() {
+    func handleSkipNextWorkout() {
         guard isWorkoutRunning, let config = workoutConfig, currentIdx < workoutIntervals.count - 1 else { return }
         currentIdx += 1
         let nextInt = workoutIntervals[currentIdx]
@@ -416,7 +417,7 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
         notifyWorkoutState()
     }
 
-    private func handleSkipPrevWorkout() {
+    func handleSkipPrevWorkout() {
         guard isWorkoutRunning, let config = workoutConfig else { return }
         if secondsLeft < currentBlockTotal - 3 {
             secondsLeft = currentBlockTotal
@@ -444,7 +445,7 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
         }
     }
 
-    private func handleAddSecondsWorkout(_ delta: Int) {
+    func handleAddSecondsWorkout(_ delta: Int) {
         guard isWorkoutRunning, delta > 0 else { return }
         secondsLeft += delta
         currentBlockTotal += delta
@@ -454,7 +455,7 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
         notifyWorkoutState()
     }
 
-    private func handleSetMutedWorkout(_ muted: Bool) {
+    func handleSetMutedWorkout(_ muted: Bool) {
         isMuted = muted
         if muted {
             currentPlayer?.stop()
@@ -467,7 +468,7 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
         notifyWorkoutState()
     }
 
-    private func handleStopWorkout() {
+    func handleStopWorkout() {
         stopWorkoutTimer()
         isWorkoutRunning = false
         isWorkoutPaused = false
@@ -482,6 +483,13 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
         keepAlivePlayer?.stop()
         keepAlivePlayer = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+        WatchSessionManager.shared.sendWorkoutEnded()
+        DispatchQueue.main.async { [weak self] in
+            self?.webView?.evaluateJavaScript(
+                "window.__onNativeWorkoutStop && window.__onNativeWorkoutStop();",
+                completionHandler: nil
+            )
+        }
     }
 
     private func startWorkoutTimer() {
@@ -632,7 +640,7 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
         startQueue(items: items, duck: config.duck, requestId: nil)
     }
 
-    private func notifyWorkoutState() {
+    func notifyWorkoutState() {
         let payload: [String: Any] = [
             "currentIdx": currentIdx,
             "secondsLeft": secondsLeft,
@@ -654,6 +662,24 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
                 completionHandler: nil
             )
         }
+
+        let currentPhase = (currentIdx < workoutIntervals.count) ? workoutIntervals[currentIdx].phase : "run"
+        let futureSec = (currentIdx + 1 < workoutIntervals.count) ? workoutIntervals[(currentIdx + 1)...].reduce(0) { $0 + $1.duration } : 0
+        let totalRemaining = max(0, secondsLeft + futureSec)
+        let workoutTitle = workoutConfig?.title ?? "Interval Run"
+
+        WatchSessionManager.shared.sendWorkoutState(
+            phase: currentPhase,
+            secondsLeft: secondsLeft,
+            currentBlockTotal: currentBlockTotal,
+            totalRemaining: totalRemaining,
+            isRunning: isWorkoutRunning && !isWorkoutPaused,
+            isPaused: isWorkoutPaused,
+            isCompleted: isWorkoutCompleted,
+            currentIdx: currentIdx,
+            totalIntervals: workoutIntervals.count,
+            workoutTitle: workoutTitle
+        )
     }
 
     private func startQueue(items: [PlaybackItem], duck: Bool, requestId: Int?) {

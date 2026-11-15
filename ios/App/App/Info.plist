@@ -70,5 +70,9 @@
 	<array>
 		<string>audio</string>
 	</array>
+	<key>NSHealthShareUsageDescription</key>
+	<string>IntervalCoach reads heart rate and workout metrics during your interval runs.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>IntervalCoach saves your completed interval runs to Apple Fitness.</string>
 </dict>
 </plist>

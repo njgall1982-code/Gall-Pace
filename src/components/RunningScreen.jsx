@@ -98,6 +98,10 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
         }
       });
 
+      audioManager.setNativeWorkoutStopListener(() => {
+        onEndWorkout();
+      });
+
       audioManager.startNativeWorkout(workout, { isMuted: isMutedRef.current });
     } else {
       audioManager.preloadWorkoutClips(workout);
@@ -123,6 +127,7 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
       wakeLockService.release();
       if (isNative) {
         audioManager.setNativeWorkoutStateListener(null);
+        audioManager.setNativeWorkoutStopListener(null);
         audioManager.stopNativeWorkout();
       } else {
         audioManager.stopAll();

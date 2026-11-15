@@ -142,6 +142,12 @@ class AudioManager {
           this._nativeWorkoutStateListener(state);
         }
       };
+
+      window.__onNativeWorkoutStop = () => {
+        if (this._nativeWorkoutStopListener) {
+          this._nativeWorkoutStopListener();
+        }
+      };
     }
 
     this.configureAudioSession();
@@ -427,6 +433,10 @@ class AudioManager {
 
   setNativeWorkoutStateListener(listener) {
     this._nativeWorkoutStateListener = listener || null;
+  }
+
+  setNativeWorkoutStopListener(listener) {
+    this._nativeWorkoutStopListener = listener || null;
   }
 
   startNativeWorkout(workout, { isMuted = false } = {}) {
