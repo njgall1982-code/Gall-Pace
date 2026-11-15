@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Combine
 import WatchKit
 import WatchConnectivity
 import HealthKit
