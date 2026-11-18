@@ -1,4 +1,4 @@
-﻿import { generateRun } from '../services/runGenerator.js';
+import { generateRun } from '../services/runGenerator.js';
 
 /**
  * Prebuilt Workout Library for IntervalCoach
@@ -178,6 +178,46 @@ export const PHASE_CONFIG = {
     glowClass: 'shadow-[0_0_30px_rgba(129,140,248,0.35)]',
     cardBorder: 'border-indigo-500/30',
     icon: 'Wind',
+    defaultEffort: null
+  },
+  bike_flat: {
+    label: 'FLAT ROAD',
+    badgeText: 'FLAT ROAD',
+    bgClass: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
+    primaryColor: '#22c55e',
+    glowClass: 'shadow-[0_0_30px_rgba(34,197,94,0.35)]',
+    cardBorder: 'border-emerald-500/30',
+    icon: 'Zap',
+    defaultEffort: null
+  },
+  bike_climb: {
+    label: 'HILL CLIMB',
+    badgeText: 'CLIMB',
+    bgClass: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
+    primaryColor: '#f59e0b',
+    glowClass: 'shadow-[0_0_30px_rgba(245,158,11,0.35)]',
+    cardBorder: 'border-amber-500/30',
+    icon: 'Flame',
+    defaultEffort: null
+  },
+  bike_surge: {
+    label: 'SPEED SURGE',
+    badgeText: 'SURGE',
+    bgClass: 'bg-rose-500/20 text-rose-300 border-rose-500/40',
+    primaryColor: '#f43f5e',
+    glowClass: 'shadow-[0_0_30px_rgba(244,63,94,0.35)]',
+    cardBorder: 'border-rose-500/30',
+    icon: 'Zap',
+    defaultEffort: null
+  },
+  bike_recovery: {
+    label: 'RECOVERY SPIN',
+    badgeText: 'RECOVER',
+    bgClass: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40',
+    primaryColor: '#06b6d4',
+    glowClass: 'shadow-[0_0_30px_rgba(6,182,212,0.35)]',
+    cardBorder: 'border-cyan-500/30',
+    icon: 'Footprints',
     defaultEffort: null
   }
 };

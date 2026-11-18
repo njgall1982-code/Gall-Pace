@@ -93,6 +93,11 @@ const DEDICATED_CLIPS = new Set([
   'warn_sprint_30s', 'warn_sprint_45s', 'warn_sprint_1m', 'warn_sprint',
   'warn_walk_30s', 'warn_walk_1m', 'warn_walk_90s', 'warn_walk_2m', 'warn_walk',
   'warn_cooldown',
+  // Cycling clips
+  'pos_in_saddle', 'pos_out_saddle', 'pos_spin_out', 'pos_surge', 'pos_climb',
+  'res_25', 'res_30', 'res_35', 'res_40', 'res_45', 'res_50', 'res_55', 'res_add', 'res_drop',
+  'cad_60_70', 'cad_70_80', 'cad_80_90', 'cad_90_100', 'cad_fast',
+  'ride_warmup', 'ride_cooldown', 'warn_bike', 'warn_climb', 'warn_surge', 'warn_recovery',
 ]);
 
 class AudioManager {
@@ -508,6 +513,9 @@ class AudioManager {
    */
   getClipKeysForInterval(interval) {
     if (!interval) return ['run_60_1m'];
+    if (Array.isArray(interval.startClips) && interval.startClips.length > 0) {
+      return interval.startClips;
+    }
     const phase = interval.phase || 'run';
     const dur = interval.duration || 60;
     const durTag = DURATION_TAGS[dur] || null;
@@ -587,6 +595,7 @@ class AudioManager {
    */
   getWarningClipKey(nextInterval) {
     if (!nextInterval) return null;
+    if (nextInterval.warningClip) return nextInterval.warningClip;
     const phase = nextInterval.phase || 'run';
     const dur = nextInterval.duration || 60;
     const durTag = DURATION_TAGS[dur] || null;

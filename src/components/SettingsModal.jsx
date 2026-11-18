@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Volume2, Sliders, CheckCircle2, Music, Sparkles, Play, Bell } from 'lucide-react';
+import { X, Volume2, Sliders, CheckCircle2, Music, Sparkles, Play, Bell, Bike } from 'lucide-react';
 import { audioManager, STUDIO_VOICES } from '../services/audioManager';
 import { storageService } from '../services/storage';
 
@@ -82,6 +82,43 @@ export function SettingsModal({ isOpen, onClose, onSettingsChanged }) {
 
         {/* Settings Body */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-5">
+          {/* Workout Activity Mode */}
+          <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Bike className="w-4 h-4 text-teal-400" />
+                <span className="text-sm font-bold text-white">Workout Activity</span>
+              </div>
+              <span className="text-[11px] text-slate-400">Default: Running</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => handleChange('activityMode', 'run')}
+                className={`p-3 rounded-xl border text-center transition-all ${
+                  (settings.activityMode || 'run') === 'run'
+                    ? 'bg-emerald-500/20 border-emerald-500 text-white font-bold'
+                    : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <div className="text-sm">🏃 Running</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">Quick Run & Intervals</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleChange('activityMode', 'bike')}
+                className={`p-3 rounded-xl border text-center transition-all ${
+                  settings.activityMode === 'bike'
+                    ? 'bg-teal-500/20 border-teal-500 text-white font-bold'
+                    : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <div className="text-sm">🚴 Cycling / Peloton</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">Quick Ride & Cadence</div>
+              </button>
+            </div>
+          </div>
+
           {/* Background Music Mixing Mode */}
           <div className="bg-gradient-to-br from-emerald-950/30 to-teal-950/20 border border-emerald-500/30 rounded-2xl p-4 space-y-3">
             <div className="flex items-start gap-3">

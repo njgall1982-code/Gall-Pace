@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Play, Pause, SkipForward, SkipBack, X, Volume2, VolumeX,
-  Sun, ShieldAlert, CheckCircle2, Zap, Footprints, Wind, Flame, Plus, Lock
+  Sun, ShieldAlert, CheckCircle2, Zap, Footprints, Wind, Flame, Plus, Lock, Bike
 } from 'lucide-react';
 import { PHASE_CONFIG, formatTime, formatTimeHuman } from '../data/defaultWorkouts';
 import { audioManager } from '../services/audioManager';
@@ -47,6 +47,7 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
   const currentInterval = workout.intervals[currentIdx] || workout.intervals[0];
   const nextInterval = workout.intervals[currentIdx + 1] || null;
   const currentPhaseConfig = PHASE_CONFIG[currentInterval.phase] || PHASE_CONFIG.run;
+  const isBikeWorkout = workout?.activity === 'bike' || Boolean(currentInterval?.cadence);
 
   // Total workout duration & halfway milestone target
   const totalWorkoutSeconds = workout.intervals.reduce((acc, curr) => acc + curr.duration, 0);
@@ -544,8 +545,9 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
             {currentInterval.phase === 'run' && <Zap className="w-4 h-4 fill-current animate-pulse" />}
             {currentInterval.phase === 'sprint' && <Flame className="w-4 h-4 fill-current animate-bounce" />}
             {currentInterval.phase === 'walk' && <Footprints className="w-4 h-4" />}
-            {currentInterval.phase === 'warmup' && <Flame className="w-4 h-4" />}
-            {currentInterval.phase === 'cooldown' && <Wind className="w-4 h-4" />}
+            {currentInterval.phase === 'warmup' && (isBikeWorkout ? <Bike className="w-4 h-4" /> : <Flame className="w-4 h-4" />)}
+            {currentInterval.phase === 'cooldown' && (isBikeWorkout ? <Bike className="w-4 h-4" /> : <Wind className="w-4 h-4" />)}
+            {currentInterval.phase?.startsWith('bike_') && <Bike className="w-4 h-4" />}
 
             <span>{currentInterval.name || currentPhaseConfig.label}</span>
 
@@ -565,6 +567,30 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
             {formatTime(secondsLeft)}
           </div>
         </div>
+
+        {/* Dedicated High-Visibility Cycling Target HUD */}
+        {isBikeWorkout && (
+          <div className="grid grid-cols-3 gap-2 w-full max-w-xs mx-auto py-2 px-3 rounded-2xl bg-slate-900/90 border border-slate-800 shadow-md">
+            <div className="text-center">
+              <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400 block">Cadence</span>
+              <span className="text-sm sm:text-base font-black text-teal-300 font-mono">
+                {currentInterval.cadence || '80–90'}
+              </span>
+            </div>
+            <div className="text-center border-x border-slate-800">
+              <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400 block">Resistance</span>
+              <span className="text-sm sm:text-base font-black text-amber-400 font-mono">
+                {currentInterval.resistance || '30'}
+              </span>
+            </div>
+            <div className="text-center">
+              <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400 block">Position</span>
+              <span className="text-xs sm:text-sm font-black text-white block mt-0.5">
+                {currentInterval.position === 'standing' ? 'Standing 🚴' : 'Seated 🪑'}
+              </span>
+            </div>
+          </div>
+        )}
 
         {/* Current Interval Progress Bar + Quick +30s Button */}
         <div className="w-full max-w-xs mx-auto">
@@ -611,6 +637,9 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
                   <span className="font-mono text-slate-400 shrink-0">{formatTimeHuman(nextInterval.duration)}</span>
                   {nextInterval.effort && (
                     <span className="text-[11px] text-amber-400 font-bold shrink-0">({nextInterval.effort}%)</span>
+                  )}
+                  {nextInterval.resistance && (
+                    <span className="text-[11px] text-amber-400 font-bold shrink-0">(Res {nextInterval.resistance} • {nextInterval.cadence})</span>
                   )}
                 </>
               ) : (

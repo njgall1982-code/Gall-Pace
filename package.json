@@ -9,7 +9,7 @@
     "cap:sync": "vite build && cap sync",
     "cap:ios": "cap open ios",
     "lint": "oxlint",
-    "test": "node --test src/services/runGenerator.test.js",
+    "test": "node --test src/services/*.test.js",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -4,6 +4,7 @@ import { WorkoutCard } from './components/WorkoutCard';
 import { RunningScreen } from './components/RunningScreen';
 import { QuickEditModal } from './components/QuickEditModal';
 import { QuickRunCard } from './components/QuickRunCard';
+import { QuickRideCard } from './components/QuickRideCard';
 import { SettingsModal } from './components/SettingsModal';
 import { WorkoutCompleteModal } from './components/WorkoutCompleteModal';
 import { DEFAULT_WORKOUTS, computeStats } from './data/defaultWorkouts';
@@ -26,6 +27,10 @@ export function App() {
   const [showIntroGuide, setShowIntroGuide] = useState(() => {
     const s = storageService.getSettings();
     return !s?.hideIntroGuide;
+  });
+  const [activityMode, setActivityMode] = useState(() => {
+    const s = storageService.getSettings();
+    return s?.activityMode || 'run';
   });
 
   // Load custom workouts and apply settings on mount
@@ -262,8 +267,12 @@ export function App() {
           </div>
         )}
 
-        {/* Quick Run generator */}
-        <QuickRunCard onStart={handleStartWorkout} onSave={handleSaveCustomWorkout} />
+        {/* Quick Workout generator (Running vs Cycling) */}
+        {activityMode === 'bike' ? (
+          <QuickRideCard onStart={handleStartWorkout} onSave={handleSaveCustomWorkout} />
+        ) : (
+          <QuickRunCard onStart={handleStartWorkout} onSave={handleSaveCustomWorkout} />
+        )}
 
         {/* Workout Library Header & Filters */}
         <div className="space-y-3">
@@ -350,6 +359,9 @@ export function App() {
           onClose={() => setIsSettingsOpen(false)}
           onSettingsChanged={(updated) => {
             setShowIntroGuide(!updated?.hideIntroGuide);
+            if (updated?.activityMode) {
+              setActivityMode(updated.activityMode);
+            }
           }}
         />
       )}
