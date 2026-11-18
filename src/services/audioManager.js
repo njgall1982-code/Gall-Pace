@@ -453,9 +453,9 @@ class AudioManager {
       phase: interval.phase || 'run',
       duration: Math.max(1, Math.round(interval.duration || 60)),
       startClips: this.getClipKeysForInterval(interval),
-      warningClip: idx < workout.intervals.length - 1
+      warningClip: interval.warningClip || (idx < workout.intervals.length - 1
         ? this.getWarningClipKey(workout.intervals[idx + 1])
-        : null,
+        : null),
     }));
 
     return this.sendNativeMessage({
@@ -839,7 +839,7 @@ class AudioManager {
 
         source.start(scheduledTime);
         const effectiveDuration = buffer.duration / (this.speechRate || 1.0);
-        scheduledTime += effectiveDuration + 0.05;
+        scheduledTime += effectiveDuration + 0.08;
       });
 
       this.activeSource = this.activeSources[0] || null;
@@ -865,8 +865,8 @@ class AudioManager {
     this.playClips(clipKeys, { withChime: true });
   }
 
-  speakWarning(nextInterval) {
-    const clipKey = this.getWarningClipKey(nextInterval);
+  speakWarning(nextInterval, currentInterval = null) {
+    const clipKey = currentInterval?.warningClip || this.getWarningClipKey(nextInterval);
     if (clipKey) {
       this.playClip(clipKey, { withChime: true });
     }

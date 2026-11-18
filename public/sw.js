@@ -1,5 +1,5 @@
 // Increment version to bust previous caches
-const CACHE_NAME = 'intervalcoach-v9';
+const CACHE_NAME = 'intervalcoach-v10';
 
 const STATIC_ASSETS = [
   './manifest.webmanifest',
@@ -33,8 +33,6 @@ self.addEventListener('activate', (event) => {
 // Network-First for HTML/Navigations so updates are instant on phones
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
-
-  const url = new URL(event.request.url);
 
   // If navigating to the page or requesting HTML, always try network first
   if (event.request.mode === 'navigate' || event.request.destination === 'document') {

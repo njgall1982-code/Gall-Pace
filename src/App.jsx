@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Header } from './components/Header';
 import { WorkoutCard } from './components/WorkoutCard';
 import { RunningScreen } from './components/RunningScreen';
@@ -7,6 +7,7 @@ import { QuickRunCard } from './components/QuickRunCard';
 import { QuickRideCard } from './components/QuickRideCard';
 import { SettingsModal } from './components/SettingsModal';
 import { WorkoutCompleteModal } from './components/WorkoutCompleteModal';
+import { BikeSetupModal } from './components/BikeSetupModal';
 import { DEFAULT_WORKOUTS, computeStats } from './data/defaultWorkouts';
 import { storageService } from './services/storage';
 import { audioManager, STUDIO_VOICES } from './services/audioManager';
@@ -32,6 +33,13 @@ export function App() {
     const s = storageService.getSettings();
     return s?.activityMode || 'run';
   });
+  const [showBikeSetupModal, setShowBikeSetupModal] = useState(false);
+
+  const customRides = useMemo(() => {
+    return customWorkouts.filter(
+      (w) => w.activity === 'bike' || /bike|ride|cycle/i.test(w.category || w.title || '')
+    );
+  }, [customWorkouts]);
 
   // Load custom workouts and apply settings on mount
   useEffect(() => {
@@ -205,7 +213,7 @@ export function App() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-emerald-500 selection:text-slate-950">
       {/* Sticky Header */}
-      <Header onOpenSettings={() => setIsSettingsOpen(true)} />
+      <Header onOpenSettings={() => setIsSettingsOpen(true)} activityMode={activityMode} />
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-4xl mx-auto w-full px-4 py-5 space-y-5">
@@ -261,7 +269,9 @@ export function App() {
               </div>
               <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/70">
                 <div className="text-[10px] font-bold uppercase text-slate-500">Step 3</div>
-                <div className="text-xs font-bold text-cyan-400 mt-0.5">Hit Start Run</div>
+                <div className="text-xs font-bold text-cyan-400 mt-0.5">
+                  {activityMode === 'bike' ? 'Hit Start Ride' : 'Hit Start Run'}
+                </div>
               </div>
             </div>
           </div>
@@ -269,77 +279,119 @@ export function App() {
 
         {/* Quick Workout generator (Running vs Cycling) */}
         {activityMode === 'bike' ? (
-          <QuickRideCard onStart={handleStartWorkout} onSave={handleSaveCustomWorkout} />
+          <>
+            <QuickRideCard
+              onStart={handleStartWorkout}
+              onSave={handleSaveCustomWorkout}
+              onOpenBikeSetup={() => setShowBikeSetupModal(true)}
+            />
+
+            {/* Saved Custom Rides */}
+            {customRides.length > 0 && (
+              <div className="space-y-3 pb-8">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-lg font-black text-white uppercase tracking-tight">
+                      Saved Custom Rides
+                    </h2>
+                    <p className="text-xs text-slate-400">
+                      Your saved cycling workouts
+                    </p>
+                  </div>
+                  <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-slate-900 border border-slate-800 text-teal-400">
+                    {customRides.length} saved
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {customRides.map((workout) => (
+                    <WorkoutCard
+                      key={workout.id}
+                      workout={workout}
+                      isCustom={true}
+                      onStart={handleStartWorkout}
+                      onEdit={(w) => setEditingWorkout(w)}
+                      onDelete={handleDeleteCustomWorkout}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
         ) : (
           <QuickRunCard onStart={handleStartWorkout} onSave={handleSaveCustomWorkout} />
         )}
 
-        {/* Workout Library Header & Filters */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-black text-white uppercase tracking-tight">
-                Workouts
-              </h2>
-              <p className="text-xs text-slate-400">
-                Tap Start Run, or use Quick-Edit to adjust times
-              </p>
+        {/* Workout Library Header & Filters (Running mode only) */}
+        {activityMode === 'run' && (
+          <>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-black text-white uppercase tracking-tight">
+                    Workouts
+                  </h2>
+                  <p className="text-xs text-slate-400">
+                    Tap Start Run, or use Quick-Edit to adjust times
+                  </p>
+                </div>
+
+                {/* Create Custom Workout Button */}
+                <button
+                  onClick={handleCreateNewCustom}
+                  className="py-2.5 px-3.5 rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 border border-slate-700 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm shrink-0"
+                >
+                  <Plus className="w-4 h-4 text-emerald-400" />
+                  <span>New Workout</span>
+                </button>
+              </div>
+
+              {/* Filter Pills */}
+              {renderPills('Style', ['All', 'Endurance', 'HIIT', 'Beginner', 'Custom'], selectedFilter, setSelectedFilter)}
+              {renderPills('Length', ['Any', 'Under 20', '20–30', '30–45', '45+'], lengthFilter, setLengthFilter)}
+              {renderPills('Run %', ['Any', 'Walk-heavy', 'Balanced', 'Run-heavy'], runFilter, setRunFilter)}
+              <div className="flex items-center justify-between gap-2 text-xs text-slate-400">
+                <span>
+                  {filteredWorkouts.length} workout{filteredWorkouts.length === 1 ? '' : 's'}
+                  {hasActiveFilters && (
+                    <button onClick={clearFilters} className="ml-2 font-bold text-emerald-400 hover:text-emerald-300">
+                      Clear filters
+                    </button>
+                  )}
+                </span>
+                <label className="flex items-center gap-1.5">
+                  Sort
+                  <select
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value)}
+                    className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-slate-200 text-xs font-bold"
+                  >
+                    {['Default', 'Shortest', 'Longest', 'Most running'].map((o) => (
+                      <option key={o} value={o}>{o}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
             </div>
 
-            {/* Create Custom Workout Button */}
-            <button
-              onClick={handleCreateNewCustom}
-              className="py-2.5 px-3.5 rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 border border-slate-700 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm shrink-0"
-            >
-              <Plus className="w-4 h-4 text-emerald-400" />
-              <span>New Workout</span>
-            </button>
-          </div>
+            {filteredWorkouts.length === 0 && (
+              <p className="text-center text-sm text-slate-400 py-6">No workouts match those filters.</p>
+            )}
 
-          {/* Filter Pills */}
-          {renderPills('Style', ['All', 'Endurance', 'HIIT', 'Beginner', 'Custom'], selectedFilter, setSelectedFilter)}
-          {renderPills('Length', ['Any', 'Under 20', '20–30', '30–45', '45+'], lengthFilter, setLengthFilter)}
-          {renderPills('Run %', ['Any', 'Walk-heavy', 'Balanced', 'Run-heavy'], runFilter, setRunFilter)}
-          <div className="flex items-center justify-between gap-2 text-xs text-slate-400">
-            <span>
-              {filteredWorkouts.length} workout{filteredWorkouts.length === 1 ? '' : 's'}
-              {hasActiveFilters && (
-                <button onClick={clearFilters} className="ml-2 font-bold text-emerald-400 hover:text-emerald-300">
-                  Clear filters
-                </button>
-              )}
-            </span>
-            <label className="flex items-center gap-1.5">
-              Sort
-              <select
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value)}
-                className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-slate-200 text-xs font-bold"
-              >
-                {['Default', 'Shortest', 'Longest', 'Most running'].map((o) => (
-                  <option key={o} value={o}>{o}</option>
-                ))}
-              </select>
-            </label>
-          </div>
-        </div>
-
-        {filteredWorkouts.length === 0 && (
-          <p className="text-center text-sm text-slate-400 py-6">No workouts match those filters.</p>
+            {/* High-Contrast Card Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pb-8">
+              {filteredWorkouts.map((workout) => (
+                <WorkoutCard
+                  key={workout.id}
+                  workout={workout}
+                  isCustom={workout.isCustom}
+                  onStart={handleStartWorkout}
+                  onEdit={(w) => setEditingWorkout(w)}
+                  onDelete={handleDeleteCustomWorkout}
+                />
+              ))}
+            </div>
+          </>
         )}
-        {/* High-Contrast Card Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pb-8">
-          {filteredWorkouts.map((workout) => (
-            <WorkoutCard
-              key={workout.id}
-              workout={workout}
-              isCustom={workout.isCustom}
-              onStart={handleStartWorkout}
-              onEdit={(w) => setEditingWorkout(w)}
-              onDelete={handleDeleteCustomWorkout}
-            />
-          ))}
-        </div>
       </main>
 
       {/* Modals */}
@@ -357,10 +409,35 @@ export function App() {
         <SettingsModal
           isOpen={isSettingsOpen}
           onClose={() => setIsSettingsOpen(false)}
+          onOpenBikeSetup={() => setShowBikeSetupModal(true)}
           onSettingsChanged={(updated) => {
             setShowIntroGuide(!updated?.hideIntroGuide);
             if (updated?.activityMode) {
               setActivityMode(updated.activityMode);
+            }
+          }}
+        />
+      )}
+
+      {showBikeSetupModal && (
+        <BikeSetupModal
+          isOpen={showBikeSetupModal}
+          onClose={() => setShowBikeSetupModal(false)}
+          isKneeFriendly={storageService.getSettings()?.bikeKneeFriendly ?? false}
+          onEnableKneeFriendly={(val) => {
+            const current = storageService.getSettings();
+            storageService.saveSettings({ ...current, bikeKneeFriendly: val });
+            try {
+              const raw = localStorage.getItem('intervalcoach_quickride');
+              if (raw) {
+                const parsed = JSON.parse(raw);
+                localStorage.setItem(
+                  'intervalcoach_quickride',
+                  JSON.stringify({ ...parsed, kneeFriendly: val })
+                );
+              }
+            } catch {
+              // Ignore storage error
             }
           }}
         />

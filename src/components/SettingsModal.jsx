@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
-import { X, Volume2, Sliders, CheckCircle2, Music, Sparkles, Play, Bell, Bike } from 'lucide-react';
+import { X, Volume2, Sliders, CheckCircle2, Music, Sparkles, Play, Bell, Bike, ShieldCheck, Info } from 'lucide-react';
 import { audioManager, STUDIO_VOICES } from '../services/audioManager';
 import { storageService } from '../services/storage';
 
-export function SettingsModal({ isOpen, onClose, onSettingsChanged }) {
+export function SettingsModal({ isOpen, onClose, onSettingsChanged, onOpenBikeSetup }) {
   if (!isOpen) return null;
 
   const [settings, setSettings] = useState(() => storageService.getSettings());
@@ -113,10 +113,44 @@ export function SettingsModal({ isOpen, onClose, onSettingsChanged }) {
                     : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200'
                 }`}
               >
-                <div className="text-sm">🚴 Cycling / Peloton</div>
+                <div className="text-sm">🚴 Cycling</div>
                 <div className="text-[10px] text-slate-400 mt-0.5">Quick Ride & Cadence</div>
               </button>
             </div>
+
+            {/* Cycling Knee Protection & Bike Setup Sub-panel */}
+            {settings.activityMode === 'bike' && (
+              <div className="pt-2.5 border-t border-slate-800 space-y-2">
+                <label className="flex items-center justify-between p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 cursor-pointer hover:bg-slate-900 transition-colors">
+                  <div className="space-y-0.5 pr-2">
+                    <div className="flex items-center gap-1.5">
+                      <ShieldCheck className="w-3.5 h-3.5 text-teal-400" />
+                      <span className="text-xs font-bold text-slate-200">Knee-Friendly Ride Default</span>
+                    </div>
+                    <span className="text-[11px] text-slate-400 block">
+                      100% seated in saddle, capped resistance (≤35), smooth 80–90 RPM to prevent joint shear.
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={settings.bikeKneeFriendly ?? false}
+                    onChange={(e) => handleChange('bikeKneeFriendly', e.target.checked)}
+                    className="w-5 h-5 accent-teal-500 cursor-pointer shrink-0"
+                  />
+                </label>
+
+                {onOpenBikeSetup && (
+                  <button
+                    type="button"
+                    onClick={onOpenBikeSetup}
+                    className="w-full py-2 px-3 rounded-xl bg-teal-500/10 hover:bg-teal-500/20 border border-teal-500/30 text-teal-300 text-xs font-bold flex items-center justify-center gap-2 transition-all active:scale-95"
+                  >
+                    <Info className="w-3.5 h-3.5 text-teal-400" />
+                    <span>Peloton & Bike Setup Guide (Zero Knee Pain)</span>
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Background Music Mixing Mode */}

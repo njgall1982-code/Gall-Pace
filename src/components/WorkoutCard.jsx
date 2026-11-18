@@ -1,5 +1,5 @@
 import React from 'react';
-import { Play, Sliders, Trash2, Clock, Activity, Zap, Footprints, Wind, Flame } from 'lucide-react';
+import { Play, Sliders, Trash2, Clock, Activity, Zap, Wind, Flame } from 'lucide-react';
 import { getWorkoutDuration, formatTimeHuman, PHASE_CONFIG } from '../data/defaultWorkouts';
 
 export function WorkoutCard({ workout, onStart, onEdit, onDelete, isCustom }) {
@@ -7,9 +7,15 @@ export function WorkoutCard({ workout, onStart, onEdit, onDelete, isCustom }) {
   const totalFormatted = formatTimeHuman(totalSeconds);
   const intervalCount = workout.intervals?.length || 0;
 
-  // Calculate run vs walk proportions
-  const runSeconds = workout.intervals?.filter(i => i.phase === 'run' || i.phase === 'sprint').reduce((s, i) => s + i.duration, 0) || 0;
-  const walkSeconds = workout.intervals?.filter(i => i.phase === 'walk' || i.phase === 'warmup' || i.phase === 'cooldown').reduce((s, i) => s + i.duration, 0) || 0;
+  const isBike = workout.activity === 'bike' || /bike|ride|cycle/i.test(workout.category || workout.title || '');
+
+  // Calculate work vs recovery proportions
+  const workSeconds = workout.intervals?.filter(i =>
+    i.phase === 'run' || i.phase === 'sprint' || i.phase === 'bike_flat' || i.phase === 'bike_climb' || i.phase === 'bike_surge'
+  ).reduce((s, i) => s + i.duration, 0) || 0;
+  const recoverySeconds = workout.intervals?.filter(i =>
+    i.phase === 'walk' || i.phase === 'warmup' || i.phase === 'cooldown' || i.phase === 'bike_recovery'
+  ).reduce((s, i) => s + i.duration, 0) || 0;
 
   // Effort range
   const efforts = workout.intervals?.map(i => i.effort).filter(e => typeof e === 'number') || [];
@@ -87,7 +93,7 @@ export function WorkoutCard({ workout, onStart, onEdit, onDelete, isCustom }) {
           <div className="flex items-center justify-between text-[11px] text-slate-400 mb-1.5 font-medium">
             <span>Interval Breakdown</span>
             <span>
-              <strong className="text-emerald-400">{Math.round(runSeconds / 60)}m run</strong> / <strong className="text-cyan-400">{Math.round(walkSeconds / 60)}m walk</strong>
+              <strong className="text-emerald-400">{Math.round(workSeconds / 60)}m {isBike ? 'ride' : 'run'}</strong> / <strong className="text-cyan-400">{Math.round(recoverySeconds / 60)}m {isBike ? 'recovery' : 'walk'}</strong>
             </span>
           </div>
 
@@ -96,10 +102,11 @@ export function WorkoutCard({ workout, onStart, onEdit, onDelete, isCustom }) {
             {workout.intervals?.map((interval, idx) => {
               const widthPct = Math.max(3, (interval.duration / totalSeconds) * 100);
               let colorClass = 'bg-cyan-500';
-              if (interval.phase === 'run') colorClass = 'bg-emerald-500';
-              if (interval.phase === 'sprint') colorClass = 'bg-rose-500';
-              if (interval.phase === 'warmup') colorClass = 'bg-amber-500';
+              if (interval.phase === 'run' || interval.phase === 'bike_flat') colorClass = 'bg-emerald-500';
+              if (interval.phase === 'sprint' || interval.phase === 'bike_surge') colorClass = 'bg-rose-500';
+              if (interval.phase === 'warmup' || interval.phase === 'bike_climb') colorClass = 'bg-amber-500';
               if (interval.phase === 'cooldown') colorClass = 'bg-indigo-500';
+              if (interval.phase === 'bike_recovery') colorClass = 'bg-cyan-500';
 
               return (
                 <div
@@ -115,16 +122,16 @@ export function WorkoutCard({ workout, onStart, onEdit, onDelete, isCustom }) {
           {/* Phase legend preview */}
           <div className="flex items-center gap-2.5 mt-2 text-[10px] text-slate-400 flex-wrap">
             <span className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span> Run
+              <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span> {isBike ? 'Flat' : 'Run'}
             </span>
             <span className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-cyan-500 inline-block"></span> Walk
+              <span className="w-2 h-2 rounded-full bg-cyan-500 inline-block"></span> {isBike ? 'Recover' : 'Walk'}
             </span>
             <span className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-rose-500 inline-block"></span> Sprint
+              <span className="w-2 h-2 rounded-full bg-rose-500 inline-block"></span> {isBike ? 'Surge' : 'Sprint'}
             </span>
             <span className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-amber-500 inline-block"></span> Warm/Cool
+              <span className="w-2 h-2 rounded-full bg-amber-500 inline-block"></span> {isBike ? 'Climb/Warm' : 'Warm/Cool'}
             </span>
           </div>
         </div>
@@ -144,10 +151,14 @@ export function WorkoutCard({ workout, onStart, onEdit, onDelete, isCustom }) {
         {/* Start Workout Primary Button */}
         <button
           onClick={() => onStart(workout)}
-          className="flex-[2] py-3 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 text-slate-950 font-black text-sm uppercase tracking-wide flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/25 transition-all active:scale-[0.98]"
+          className={`flex-[2] py-3 px-4 rounded-xl ${
+            isBike
+              ? 'bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-400 hover:to-emerald-400 text-slate-950 shadow-teal-500/25'
+              : 'bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 text-slate-950 shadow-emerald-500/25'
+          } font-black text-sm uppercase tracking-wide flex items-center justify-center gap-2 shadow-lg transition-all active:scale-[0.98]`}
         >
           <Play className="w-4 h-4 fill-current" />
-          <span>Start Run</span>
+          <span>{isBike ? 'Start Ride' : 'Start Run'}</span>
         </button>
       </div>
     </div>

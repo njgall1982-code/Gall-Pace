@@ -37,6 +37,7 @@ export function WorkoutCompleteModal({ isOpen, workout, stats, onClose }) {
   const runTime = stats?.runTime || 0;
   const walkTime = stats?.walkTime || 0;
   const completedIntervals = stats?.completedIntervals || workout.intervals.length;
+  const isBike = workout.activity === 'bike' || /ride|bike|cycle/i.test(workout.title || '');
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-md animate-in fade-in">
@@ -74,7 +75,7 @@ export function WorkoutCompleteModal({ isOpen, workout, stats, onClose }) {
 
           <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-3.5">
             <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
-              <Flame className="w-3 h-3 text-emerald-400" /> Run Time
+              <Flame className="w-3 h-3 text-emerald-400" /> {isBike ? 'Ride Time' : 'Run Time'}
             </div>
             <div className="text-lg font-black text-emerald-400 mt-0.5">
               {formatTimeHuman(runTime)}
@@ -83,7 +84,7 @@ export function WorkoutCompleteModal({ isOpen, workout, stats, onClose }) {
 
           <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-3.5">
             <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
-              <Footprints className="w-3 h-3 text-cyan-400" /> Walk Time
+              <Footprints className="w-3 h-3 text-cyan-400" /> {isBike ? 'Recovery Time' : 'Walk Time'}
             </div>
             <div className="text-lg font-black text-cyan-400 mt-0.5">
               {formatTimeHuman(walkTime)}

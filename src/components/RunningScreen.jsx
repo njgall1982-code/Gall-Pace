@@ -192,9 +192,19 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
       const computedRemaining = Math.max(0, Math.round((blockEndTimestampRef.current - now) / 1000));
 
       setSecondsLeft((prev) => {
+        if (computedRemaining === prev) {
+          return prev;
+        }
+
         const delta = Math.max(1, prev - computedRemaining);
         statsRef.current.totalTime += delta;
-        if (currentInterval.phase === 'run' || currentInterval.phase === 'sprint') {
+        const isActiveWork =
+          currentInterval.phase === 'run' ||
+          currentInterval.phase === 'sprint' ||
+          currentInterval.phase === 'bike_flat' ||
+          currentInterval.phase === 'bike_climb' ||
+          currentInterval.phase === 'bike_surge';
+        if (isActiveWork) {
           statsRef.current.runTime += delta;
         } else {
           statsRef.current.walkTime += delta;
@@ -229,7 +239,7 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
           nextInterval
         ) {
           cueStateRef.current.announcedTenSec = true;
-          audioManager.speakWarning(nextInterval);
+          audioManager.speakWarning(nextInterval, currentInterval);
         }
 
         // 3, 2, 1 Countdown Beeps
@@ -415,14 +425,16 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
   if (isHighContrast) {
     themeBg = 'bg-black text-white';
     timerTextColor = 'text-white';
-  } else if (currentInterval.phase === 'run') {
+  } else if (currentInterval.phase === 'run' || currentInterval.phase === 'bike_flat') {
     timerTextColor = 'text-emerald-300';
-  } else if (currentInterval.phase === 'sprint') {
+  } else if (currentInterval.phase === 'sprint' || currentInterval.phase === 'bike_surge') {
     timerTextColor = 'text-rose-400';
-  } else if (currentInterval.phase === 'walk') {
+  } else if (currentInterval.phase === 'walk' || currentInterval.phase === 'bike_recovery') {
     timerTextColor = 'text-cyan-300';
-  } else if (currentInterval.phase === 'warmup') {
+  } else if (currentInterval.phase === 'warmup' || currentInterval.phase === 'bike_climb') {
     timerTextColor = 'text-amber-300';
+  } else if (currentInterval.phase === 'cooldown') {
+    timerTextColor = 'text-indigo-300';
   }
 
   return (
@@ -503,7 +515,7 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
             <button
               onClick={() => setShowExitConfirm(true)}
               className="p-2 rounded-full bg-slate-900 text-slate-400 hover:text-rose-400 border border-slate-800 transition-all active:scale-95"
-              title="End Workout"
+              title={isBikeWorkout ? 'End Ride' : 'End Workout'}
             >
               <X className="w-4 h-4" />
             </button>
@@ -519,9 +531,11 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
               let bg = 'bg-slate-800';
               if (isPast) bg = 'bg-slate-600';
               if (isCurrent) {
-                if (int.phase === 'run') bg = 'bg-emerald-400';
-                else if (int.phase === 'sprint') bg = 'bg-rose-500';
-                else if (int.phase === 'walk') bg = 'bg-cyan-400';
+                if (int.phase === 'run' || int.phase === 'bike_flat') bg = 'bg-emerald-400';
+                else if (int.phase === 'sprint' || int.phase === 'bike_surge') bg = 'bg-rose-500';
+                else if (int.phase === 'walk' || int.phase === 'bike_recovery') bg = 'bg-cyan-400';
+                else if (int.phase === 'bike_climb') bg = 'bg-amber-400';
+                else if (int.phase === 'cooldown') bg = 'bg-indigo-400';
                 else bg = 'bg-amber-400';
               }
               return (
@@ -568,26 +582,32 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
           </div>
         </div>
 
-        {/* Dedicated High-Visibility Cycling Target HUD */}
+        {/* Dedicated High-Visibility Cycling Target HUD (Optimized for 3ft distance) */}
         {isBikeWorkout && (
-          <div className="grid grid-cols-3 gap-2 w-full max-w-xs mx-auto py-2 px-3 rounded-2xl bg-slate-900/90 border border-slate-800 shadow-md">
-            <div className="text-center">
-              <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400 block">Cadence</span>
-              <span className="text-sm sm:text-base font-black text-teal-300 font-mono">
+          <div className="grid grid-cols-3 gap-2 w-full max-w-sm mx-auto py-2.5 px-3 rounded-2xl bg-slate-900/90 border border-slate-800 shadow-xl">
+            <div className="text-center flex flex-col justify-center">
+              <span className="text-[10px] uppercase font-black tracking-wider text-slate-400 block">Cadence</span>
+              <span className="text-xl sm:text-2xl font-black text-teal-300 font-mono tracking-tight leading-tight mt-0.5">
                 {currentInterval.cadence || '80–90'}
               </span>
             </div>
-            <div className="text-center border-x border-slate-800">
-              <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400 block">Resistance</span>
-              <span className="text-sm sm:text-base font-black text-amber-400 font-mono">
+            <div className="text-center border-x border-slate-800 flex flex-col justify-center">
+              <span className="text-[10px] uppercase font-black tracking-wider text-slate-400 block">Resistance</span>
+              <span className="text-xl sm:text-2xl font-black text-amber-400 font-mono tracking-tight leading-tight mt-0.5">
                 {currentInterval.resistance || '30'}
               </span>
             </div>
-            <div className="text-center">
-              <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400 block">Position</span>
-              <span className="text-xs sm:text-sm font-black text-white block mt-0.5">
-                {currentInterval.position === 'standing' ? 'Standing 🚴' : 'Seated 🪑'}
-              </span>
+            <div className="text-center flex flex-col justify-center items-center">
+              <span className="text-[10px] uppercase font-black tracking-wider text-slate-400 block mb-1">Position</span>
+              {currentInterval.position === 'standing' ? (
+                <span className="px-2 py-0.5 rounded-lg bg-amber-500/25 border border-amber-500/50 text-amber-300 text-xs font-black shadow-[0_0_12px_rgba(245,158,11,0.3)] animate-pulse">
+                  🚴 Stand
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 text-xs font-bold">
+                  🪑 Saddle
+                </span>
+              )}
             </div>
           </div>
         )}
@@ -597,9 +617,10 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
           <div className="w-full h-2.5 bg-slate-900 rounded-full overflow-hidden p-0.5 border border-slate-800">
             <div
               className={`h-full rounded-full transition-all duration-1000 ease-linear ${
-                currentInterval.phase === 'run' ? 'bg-emerald-400' :
-                currentInterval.phase === 'sprint' ? 'bg-rose-500' :
-                currentInterval.phase === 'walk' ? 'bg-cyan-400' : 'bg-amber-400'
+                currentInterval.phase === 'run' || currentInterval.phase === 'bike_flat' ? 'bg-emerald-400' :
+                currentInterval.phase === 'sprint' || currentInterval.phase === 'bike_surge' ? 'bg-rose-500' :
+                currentInterval.phase === 'walk' || currentInterval.phase === 'bike_recovery' ? 'bg-cyan-400' :
+                currentInterval.phase === 'cooldown' ? 'bg-indigo-400' : 'bg-amber-400'
               }`}
               style={{ width: `${intervalProgressPct}%` }}
             />
@@ -628,9 +649,11 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
               {nextInterval ? (
                 <>
                   <span className={`w-2 h-2 rounded-full shrink-0 ${
-                    nextInterval.phase === 'run' ? 'bg-emerald-400' :
-                    nextInterval.phase === 'sprint' ? 'bg-rose-500' :
-                    nextInterval.phase === 'walk' ? 'bg-cyan-400' : 'bg-amber-400'
+                    nextInterval.phase === 'run' || nextInterval.phase === 'bike_flat' ? 'bg-emerald-400' :
+                    nextInterval.phase === 'sprint' || nextInterval.phase === 'bike_surge' ? 'bg-rose-500' :
+                    nextInterval.phase === 'walk' || nextInterval.phase === 'bike_recovery' ? 'bg-cyan-400' :
+                    nextInterval.phase === 'cooldown' ? 'bg-indigo-400' :
+                    'bg-amber-400'
                   }`} />
                   <span className="truncate">{nextInterval.name || nextInterval.phase.toUpperCase()}</span>
                   <span className="text-slate-500">•</span>
@@ -737,9 +760,11 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
               <ShieldAlert className="w-6 h-6" />
             </div>
 
-            <h3 className="text-lg font-black text-white">End Workout Early?</h3>
+            <h3 className="text-lg font-black text-white">
+              End {isBikeWorkout ? 'Ride' : 'Workout'} Early?
+            </h3>
             <p className="text-xs text-slate-400">
-              You're doing great! Are you sure you want to stop this run session now?
+              You're doing great! Are you sure you want to stop this {isBikeWorkout ? 'ride' : 'run'} session now?
             </p>
 
             <div className="grid grid-cols-2 gap-2.5 pt-2">
@@ -747,7 +772,7 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
                 onClick={() => setShowExitConfirm(false)}
                 className="py-3 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs transition-colors"
               >
-                Keep Running
+                {isBikeWorkout ? 'Keep Riding' : 'Keep Running'}
               </button>
               <button
                 onClick={() => {
@@ -761,7 +786,7 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
                 }}
                 className="py-3 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs transition-colors"
               >
-                Yes, End Run
+                {isBikeWorkout ? 'Yes, End Ride' : 'Yes, End Run'}
               </button>
             </div>
           </div>

@@ -7,10 +7,14 @@ struct WorkoutActiveView: View {
 
     private var phaseColor: Color {
         let p = workoutManager.phase.lowercased()
-        if p == "run" || p == "sprint" {
+        if p == "run" || p == "bike_flat" {
             return Color.green
-        } else if p == "walk" || p == "rest" {
+        } else if p == "sprint" || p == "bike_surge" {
+            return Color.red
+        } else if p == "walk" || p == "rest" || p == "bike_recovery" {
             return Color.cyan
+        } else if p == "cooldown" {
+            return Color.indigo
         } else {
             return Color.orange
         }
@@ -23,6 +27,10 @@ struct WorkoutActiveView: View {
         if p == "walk" { return "WALK" }
         if p == "warmup" { return "WARM UP" }
         if p == "cooldown" { return "COOL DOWN" }
+        if p == "bike_flat" { return "FLAT" }
+        if p == "bike_climb" { return "CLIMB" }
+        if p == "bike_surge" { return "SURGE" }
+        if p == "bike_recovery" { return "RECOVER" }
         return workoutManager.phase.uppercased()
     }
 

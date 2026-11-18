@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Play, Shuffle, Save, Minus, Plus, ChevronDown, ChevronUp, Zap, Check, HeartPulse } from 'lucide-react';
+import { Play, Shuffle, Save, Minus, Plus, ChevronDown, ChevronUp, Zap, Check, HeartPulse, ShieldCheck, RotateCcw } from 'lucide-react';
 import {
   generateRun,
   DEFAULT_PARAMS,
@@ -11,6 +11,7 @@ import {
 import { storageService } from '../services/storage';
 
 const STORAGE_KEY = 'intervalcoach_quickrun';
+const LAST_RUN_KEY = 'intervalcoach_last_run';
 const PARAMS_VERSION = 3;
 const LENGTH_CHIPS = [15, 20, 30, 45, 60];
 const MAX_RUN_CHIPS = [60, 90, 120, 180, 240, 300];
@@ -152,6 +153,15 @@ export function QuickRunCard({ onStart, onSave }) {
   const [nudgeDismissed, setNudgeDismissed] = useState(false);
   const recentHard = useMemo(() => wasRecentHardWorkout(), []);
 
+  const lastRun = useMemo(() => {
+    try {
+      const raw = localStorage.getItem(LAST_RUN_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }, []);
+
   const update = (patch) => {
     setParams((prev) => {
       const next = { ...prev, ...patch };
@@ -165,9 +175,32 @@ export function QuickRunCard({ onStart, onSave }) {
     setSaved(false);
   };
 
-  const workout = useMemo(() => generateRun({ ...params, seed }), [params, seed]);
+  const workout = useMemo(
+    () => generateRun({ ...params, twoStageCooldown: true, seed }),
+    [params, seed]
+  );
   const totalSec = workout.stats.totalSec;
   const effortBand = effortBandForPeak(params.peakEffort);
+
+  const handleStart = () => {
+    try {
+      localStorage.setItem(
+        LAST_RUN_KEY,
+        JSON.stringify({
+          totalMin: params.totalMin,
+          runPct: params.runPct,
+          peakEffort: params.peakEffort,
+          maxRunSec: params.maxRunSec,
+          maxWalkSec: params.maxWalkSec,
+          jointProtect: Boolean(params.jointProtect),
+          warmupCooldownExtra: Boolean(params.warmupCooldownExtra),
+        })
+      );
+    } catch {
+      // Storage unavailable
+    }
+    onStart(workout);
+  };
 
   const handleShuffle = () => {
     const prevPattern = workout.intervals
@@ -210,6 +243,48 @@ export function QuickRunCard({ onStart, onSave }) {
         )}
       </div>
 
+      {/* Joint-Protect Mode Banner */}
+      <div
+        className={`p-3 rounded-2xl border transition-all flex items-center justify-between gap-2.5 ${
+          params.jointProtect
+            ? 'bg-gradient-to-r from-emerald-950/60 to-teal-950/40 border-emerald-500/50 shadow-md shadow-emerald-950/30'
+            : 'bg-slate-900/70 border-slate-800 text-slate-300'
+        }`}
+      >
+        <button
+          type="button"
+          onClick={() => update({ jointProtect: !params.jointProtect })}
+          className="flex items-center gap-2.5 text-left flex-1 min-w-0 active:scale-[0.99] transition-transform"
+        >
+          <div
+            className={`p-2 rounded-xl shrink-0 transition-colors ${
+              params.jointProtect
+                ? 'bg-emerald-500 text-slate-950 shadow-[0_0_12px_rgba(16,185,129,0.35)]'
+                : 'bg-slate-800 text-slate-400 border border-slate-700'
+            }`}
+          >
+            <ShieldCheck className="w-4 h-4" />
+          </div>
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-black text-white">Joint-Protect Mode</span>
+              {params.jointProtect ? (
+                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-emerald-500/25 text-emerald-300 font-bold border border-emerald-500/40">
+                  On
+                </span>
+              ) : (
+                <span className="text-[10px] text-slate-500 font-medium">Off</span>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-400 truncate mt-0.5">
+              {params.jointProtect
+                ? 'Caps runs to 60s • 45s+ walks • Zone 2 (≤55% effort)'
+                : 'Knee & shin protect: short runs, generous recovery walks'}
+            </p>
+          </div>
+        </button>
+      </div>
+
       {recentHard && !nudgeDismissed && params.peakEffort >= 65 && (
         <div className="flex items-center justify-between gap-2 bg-cyan-950/60 border border-cyan-500/30 rounded-xl px-3 py-2 text-xs text-cyan-100">
           <div className="flex items-center gap-2">
@@ -238,7 +313,20 @@ export function QuickRunCard({ onStart, onSave }) {
 
       {/* Goal Presets */}
       <div>
-        <Label>Goal preset</Label>
+        <div className="flex items-center justify-between mb-1.5">
+          <span className="text-[11px] font-black uppercase tracking-wider text-slate-400">Goal preset</span>
+          {lastRun && (
+            <button
+              type="button"
+              onClick={() => update(lastRun)}
+              className="text-[11px] font-bold text-emerald-400 hover:text-emerald-300 flex items-center gap-1 active:scale-95 transition-all"
+              title="Load last completed run settings"
+            >
+              <RotateCcw className="w-3 h-3" />
+              <span>Repeat Last ({lastRun.totalMin}m • {lastRun.runPct}%{lastRun.jointProtect ? ' • 🛡️' : ''})</span>
+            </button>
+          )}
+        </div>
         <div className="flex items-center gap-2 flex-wrap">
           {QUICK_RUN_PRESETS.map((preset) => {
             const isActive = Object.entries(preset.params).every(([k, v]) => params[k] === v);
@@ -251,9 +339,20 @@ export function QuickRunCard({ onStart, onSave }) {
         </div>
       </div>
 
-      {/* Length */}
-      <div>
-        <Label value={`${params.totalMin} min`}>Length</Label>
+      {/* Length & Warm-up/Cool-down Timing Accounting */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[11px] font-black uppercase tracking-wider text-slate-400">Length</span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-sm font-black text-white">
+              {params.warmupCooldownExtra
+                ? `${params.totalMin}m work (+${Math.round((workout.stats.warmupSec + workout.stats.cooldownSec) / 60)}m = ${workout.stats.totalMin}m)`
+                : `${params.totalMin} min total`}
+            </span>
+          </div>
+        </div>
+
+        {/* Chips for duration */}
         <div className="flex items-center gap-2 flex-wrap">
           <button
             type="button"
@@ -265,7 +364,7 @@ export function QuickRunCard({ onStart, onSave }) {
           </button>
           {LENGTH_CHIPS.map((m) => (
             <Chip key={m} active={params.totalMin === m} onClick={() => update({ totalMin: m })}>
-              {m}
+              {m}{params.warmupCooldownExtra ? 'm+' : 'm'}
             </Chip>
           ))}
           <button
@@ -275,6 +374,32 @@ export function QuickRunCard({ onStart, onSave }) {
             className="p-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 active:scale-95"
           >
             <Plus className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Warmup & Cooldown Mode Toggle (Included vs Extra) */}
+        <div className="flex items-center justify-between pt-1 text-xs">
+          <span className="text-[11px] text-slate-400">Warm-up & Cool-down:</span>
+          <button
+            type="button"
+            onClick={() => update({ warmupCooldownExtra: !params.warmupCooldownExtra })}
+            className={`px-2.5 py-1 rounded-xl text-xs font-bold border transition-all active:scale-95 flex items-center gap-1.5 ${
+              params.warmupCooldownExtra
+                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 shadow-sm'
+                : 'bg-slate-800/80 text-slate-400 border-slate-700 hover:text-slate-200'
+            }`}
+          >
+            {params.warmupCooldownExtra ? (
+              <>
+                <span className="text-emerald-400 font-black">+ Added on Top</span>
+                <span className="text-[10px] text-emerald-200/80">(Full {params.totalMin}m intervals)</span>
+              </>
+            ) : (
+              <>
+                <span>Included in {params.totalMin}m</span>
+                <span className="text-[10px] text-slate-500">(Tap to add on top)</span>
+              </>
+            )}
           </button>
         </div>
       </div>
@@ -442,7 +567,7 @@ export function QuickRunCard({ onStart, onSave }) {
       <div className="flex gap-2">
         <button
           type="button"
-          onClick={() => onStart(workout)}
+          onClick={handleStart}
           className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 font-black text-sm uppercase tracking-wider transition-all"
         >
           <Play className="w-4 h-4" /> Start

@@ -204,6 +204,99 @@ test('healthy workout routine: dynamic warmup/cooldown, finish taper, walk cue m
   assert.ok(zone2.talkTest.length > 0);
 });
 
+test('orthopedics: jointProtect mode enforces safe knee and shin limits', () => {
+  for (let s = 1; s <= 20; s++) {
+    const w = generateRun({
+      totalMin: 30,
+      runPct: 75,
+      peakEffort: 80,
+      maxRunSec: 180,
+      minWalkSec: 15,
+      jointProtect: true,
+      seed: s,
+    });
+
+    assert.strictEqual(w.params.jointProtect, true);
+    assert.strictEqual(w.stats.jointProtect, true);
+    assert.ok(w.subtitle.includes('Joint-Protect'));
+
+    // Runs never exceed 60s
+    for (const rDur of runsOf(w)) {
+      assert.ok(rDur <= 60, `jointProtect run duration (${rDur}) must be <= 60s`);
+    }
+
+    // Walks are at least 45s
+    for (const wDur of walksOf(w)) {
+      assert.ok(wDur >= 45, `jointProtect walk duration (${wDur}) must be >= 45s`);
+    }
+
+    // Peak effort never exceeds 55%
+    for (const iv of runIntervalsOf(w)) {
+      assert.ok(iv.effort <= 55, `jointProtect run effort (${iv.effort}%) must be <= 55%`);
+    }
+  }
+});
+
+test('session timing: warmupCooldownExtra delivers full requested duration of interval work', () => {
+  for (const totalMin of [15, 20, 30]) {
+    const w = generateRun({
+      totalMin,
+      runPct: 50,
+      warmupCooldownExtra: true,
+      seed: 42,
+    });
+
+    const expectedMainSec = totalMin * 60;
+    const actualIntervalsWorkSec = w.intervals
+      .filter((i) => i.phase !== 'warmup' && i.phase !== 'cooldown' && i.id !== `${w.id}-cooldown-flush`)
+      .reduce((s, i) => s + i.duration, 0);
+
+    assert.strictEqual(
+      actualIntervalsWorkSec,
+      expectedMainSec,
+      `warmupCooldownExtra must allocate exact ${expectedMainSec}s to main block, got ${actualIntervalsWorkSec}s`
+    );
+
+    assert.ok(w.stats.totalSec > expectedMainSec, 'Total workout seconds must exceed main block seconds');
+    assert.ok(w.title.includes('(+'), 'Title should display the extra warm/cool duration');
+  }
+});
+
+test('physiology: twoStageCooldown splits cooldown into active flush walk and final recovery walk', () => {
+  const w = generateRun({
+    totalMin: 30,
+    peakEffort: 65,
+    twoStageCooldown: true,
+    seed: 99,
+  });
+
+  const lastTwo = w.intervals.slice(-2);
+  const stage1 = lastTwo[0];
+  const stage2 = lastTwo[1];
+
+  assert.strictEqual(stage1.phase, 'walk');
+  assert.strictEqual(stage1.name, 'Active Flush Walk');
+  assert.strictEqual(stage1.duration, 60);
+
+  assert.strictEqual(stage2.phase, 'cooldown');
+  assert.strictEqual(stage2.name, 'Cool Down Walk');
+  assert.ok(stage2.duration >= 60);
+});
+
+test('physiology: Run 1 acts as Base Jog On-Ramp with cadence form reminder', () => {
+  const w = generateRun({
+    totalMin: 20,
+    runPct: 50,
+    peakEffort: 65,
+    seed: 123,
+  });
+
+  const run1 = runIntervalsOf(w)[0];
+  assert.strictEqual(run1.name, 'Base Jog On-Ramp');
+  assert.ok(run1.effort <= 40);
+  assert.match(run1.cue, /quick light steps under your hips/i);
+});
+
 
 
 

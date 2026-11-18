@@ -212,10 +212,14 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
                 var items: [PlaybackItem] = []
                 if withChime {
                     items.append(.wavData(self.preCueChimeWav, volume: 0.45))
+                    items.append(.wavData(self.shortGapWav, volume: 0.01))
                 }
-                for clipKey in clips {
+                for (idx, clipKey) in clips.enumerated() {
                     if let url = self.findVoiceClipURL(voiceId: voiceId, clipKey: clipKey) {
                         items.append(.fileURL(url, rate: rate, volume: min(1.0, volume)))
+                        if idx < clips.count - 1 {
+                            items.append(.wavData(self.shortGapWav, volume: 0.01))
+                        }
                     }
                 }
                 self.startQueue(items: items, duck: shouldDuck, requestId: requestId)
@@ -366,7 +370,8 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
                 let delta = secondsLeft - remaining
                 let phase = workoutIntervals[currentIdx].phase
                 totalTime += delta
-                if phase == "run" || phase == "sprint" {
+                let isActive = phase == "run" || phase == "sprint" || phase == "bike_flat" || phase == "bike_climb" || phase == "bike_surge"
+                if isActive {
                     runTime += delta
                 } else {
                     walkTime += delta
@@ -526,7 +531,8 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
         if delta > 0 {
             let phase = workoutIntervals[currentIdx].phase
             totalTime += delta
-            if phase == "run" || phase == "sprint" {
+            let isActive = phase == "run" || phase == "sprint" || phase == "bike_flat" || phase == "bike_climb" || phase == "bike_surge"
+            if isActive {
                 runTime += delta
             } else {
                 walkTime += delta
@@ -580,10 +586,14 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
                     }
                     if config.chimeEnabled {
                         items.append(.wavData(preCueChimeWav, volume: 0.45))
+                        items.append(.wavData(shortGapWav, volume: 0.01))
                     }
-                    for clipKey in nextInt.startClips {
+                    for (idx, clipKey) in nextInt.startClips.enumerated() {
                         if let url = findVoiceClipURL(voiceId: config.voiceId, clipKey: clipKey) {
                             items.append(.fileURL(url, rate: config.rate, volume: min(1.0, config.volume)))
+                            if idx < nextInt.startClips.count - 1 {
+                                items.append(.wavData(shortGapWav, volume: 0.01))
+                            }
                         }
                     }
                     startQueue(items: items, duck: config.duck, requestId: nil)
@@ -631,10 +641,14 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
         var items: [PlaybackItem] = []
         if withChime {
             items.append(.wavData(preCueChimeWav, volume: 0.45))
+            items.append(.wavData(shortGapWav, volume: 0.01))
         }
-        for clipKey in clips {
+        for (idx, clipKey) in clips.enumerated() {
             if let url = findVoiceClipURL(voiceId: config.voiceId, clipKey: clipKey) {
                 items.append(.fileURL(url, rate: config.rate, volume: min(1.0, config.volume)))
+                if idx < clips.count - 1 {
+                    items.append(.wavData(shortGapWav, volume: 0.01))
+                }
             }
         }
         startQueue(items: items, duck: config.duck, requestId: nil)

@@ -127,9 +127,9 @@ function durationClipKey(sec) {
   return `for_${sec}s`;
 }
 
-function snapResistance(val) {
+function snapResistance(val, maxCap = 55) {
   const rounded = Math.round(val / 5) * 5;
-  return Math.min(55, Math.max(25, rounded));
+  return Math.min(maxCap, Math.max(25, rounded));
 }
 
 /**
@@ -139,136 +139,195 @@ export function generateBikeWorkout({
   totalMin = 20,
   effort = 'moderate',
   style = 'hills',
+  kneeFriendly = false,
   seed = Date.now(),
 } = {}) {
   const rng = createSeededRng(seed);
   const effortCfg = BIKE_EFFORTS[effort] || BIKE_EFFORTS.moderate;
   const styleCfg = BIKE_STYLES[style] || BIKE_STYLES.hills;
 
-  // Warmup and cooldown scaling
+  // Orthopedic Joint-Protect Constraints
+  // If kneeFriendly is enabled:
+  // 1. Cap resistance at 35 to prevent high patellofemoral compressive force
+  // 2. Lock 100% of intervals into the saddle (zero standing)
+  // 3. Cadence strictly locked to joint-sparing 80-90 RPM window
+  const maxResCap = kneeFriendly ? 35 : 55;
+  const surgeCadenceClip = kneeFriendly ? 'cad_80_90' : effortCfg.cadenceSurges;
+  const surgeCadenceLabel = kneeFriendly ? '80–90 RPM' : effortCfg.cadenceLabelSurges;
+  const climbCadenceClip = kneeFriendly ? 'cad_70_80' : effortCfg.cadenceClimbs;
+  const climbCadenceLabel = kneeFriendly ? '75–85 RPM' : effortCfg.cadenceLabelClimbs;
+
+  // Warmup, On-Ramp, and Cooldown scaling
   const warmupSec = totalMin >= 30 ? 180 : 120;
+  const onRampSec = totalMin >= 30 ? 90 : 60;
   const cooldownSec = totalMin >= 30 ? 180 : 120;
-  const mainSec = Math.max(300, totalMin * 60 - warmupSec - cooldownSec);
+  const mainSec = Math.max(180, totalMin * 60 - warmupSec - onRampSec - cooldownSec);
 
   const intervals = [];
 
-  // 1. Warm-up
+  // 1. Warm-up Spin
   intervals.push({
     id: 'bike-warmup',
     phase: 'warmup',
     name: 'Warm-up Spin',
     duration: warmupSec,
     cadence: '80–90 RPM',
-    resistance: effortCfg.resMin,
+    resistance: Math.min(maxResCap, effortCfg.resMin),
     position: 'saddle',
-    startClips: ['ride_warmup', `res_${effortCfg.resMin}`, 'cad_80_90', durationClipKey(warmupSec)],
+    startClips: ['ride_warmup', `res_${Math.min(maxResCap, effortCfg.resMin)}`, 'cad_80_90', durationClipKey(warmupSec)],
     warningClip: 'warn_bike',
-    cue: `Warm-up spin at resistance ${effortCfg.resMin}, cadence 80 to 90 for ${warmupSec / 60} minutes.`,
+    cue: `Warm-up spin at resistance ${Math.min(maxResCap, effortCfg.resMin)}, cadence 80 to 90 for ${warmupSec / 60} minutes.`,
   });
 
-  // 2. Main Block Generation
+  // 2. Post-Warmup On-Ramp (Safe physiological transition to main load)
+  intervals.push({
+    id: 'bike-onramp',
+    phase: 'bike_flat',
+    name: 'Base Cadence On-Ramp',
+    duration: onRampSec,
+    cadence: effortCfg.cadenceLabelFlats,
+    resistance: Math.min(maxResCap, effortCfg.resMin),
+    position: 'saddle',
+    startClips: ['pos_in_saddle', `res_${Math.min(maxResCap, effortCfg.resMin)}`, effortCfg.cadenceFlats, durationClipKey(onRampSec)],
+    warningClip: style === 'hills' ? 'warn_climb' : (style === 'surges' ? 'warn_surge' : 'warn_bike'),
+    cue: `Settle in on flat road. Resistance ${Math.min(maxResCap, effortCfg.resMin)}, cadence ${effortCfg.cadenceLabelFlats} for ${onRampSec} seconds.`,
+  });
+
+  // 3. Main Block Generation
   let currentSec = 0;
   let intervalCounter = 1;
 
   if (style === 'surges') {
-    // Alternating surges and recoveries
+    // Alternating surges and recoveries with cluster periodization for longer workouts
     const surgeDur = effort === 'hard' ? 45 : 60;
     const recDur = effort === 'hard' ? 60 : (effort === 'gentle' ? 60 : 45);
-    const roundDur = surgeDur + recDur;
-    const numRounds = Math.max(2, Math.floor(mainSec / roundDur));
-    const extraPerRound = Math.floor((mainSec - numRounds * roundDur) / numRounds);
+    const flushDur = 90;
+    let surgeCount = 0;
 
-    for (let r = 0; r < numRounds; r++) {
-      const isLastRound = r === numRounds - 1;
-      const roundSurge = surgeDur;
-      // Distribute any remaining seconds into recoveries
-      let roundRec = recDur + (extraPerRound > 0 ? (extraPerRound >= 30 ? 30 : 0) : 0);
-      if (isLastRound) {
-        const remaining = mainSec - currentSec - roundSurge;
-        if (remaining >= 30) roundRec = Math.min(180, remaining);
+    while (currentSec < mainSec - 30) {
+      const remainingSec = mainSec - currentSec;
+
+      // Periodized Surge Sets: Insert an aerobic clearing flush every 3 surges on rides >= 30m
+      if (totalMin >= 30 && surgeCount > 0 && surgeCount % 3 === 0 && remainingSec >= flushDur + surgeDur) {
+        const flushRes = Math.min(maxResCap, effortCfg.resMin);
+        intervals.push({
+          id: `bike-flush-${intervalCounter++}`,
+          phase: 'bike_flat',
+          name: 'Aerobic Clearing Flush',
+          duration: flushDur,
+          cadence: '80–90 RPM',
+          resistance: flushRes,
+          position: 'saddle',
+          startClips: ['pos_spin_out', `res_${flushRes}`, 'cad_80_90', durationClipKey(flushDur)],
+          warningClip: 'warn_surge',
+          cue: `Clear the legs with an aerobic flush. Resistance ${flushRes}, cadence 80 to 90 for 90 seconds.`,
+        });
+        currentSec += flushDur;
+        continue;
       }
 
       // Work Interval (Surge)
-      const surgeRes = snapResistance(effortCfg.resMin + (effort === 'hard' ? 10 : 5));
+      const roundSurge = Math.min(surgeDur, remainingSec);
+      const surgeBonus = kneeFriendly ? 5 : (effort === 'hard' ? 10 : 5);
+      const surgeRes = snapResistance(effortCfg.resMin + surgeBonus, maxResCap);
+      surgeCount++;
+
       intervals.push({
         id: `bike-surge-${intervalCounter++}`,
         phase: 'bike_surge',
-        name: `Speed Surge ${r + 1}`,
+        name: `Speed Surge ${surgeCount}`,
         duration: roundSurge,
-        cadence: effortCfg.cadenceLabelSurges,
+        cadence: surgeCadenceLabel,
         resistance: surgeRes,
         position: 'saddle',
-        startClips: ['pos_surge', `res_${surgeRes}`, effortCfg.cadenceSurges, durationClipKey(roundSurge)],
+        startClips: ['pos_surge', `res_${surgeRes}`, surgeCadenceClip, durationClipKey(roundSurge)],
         warningClip: 'warn_recovery',
-        cue: `Speed surge! Cadence ${effortCfg.cadenceLabelSurges}, resistance ${surgeRes} for ${roundSurge} seconds.`,
+        cue: `Speed surge! Cadence ${surgeCadenceLabel}, resistance ${surgeRes} for ${roundSurge} seconds.`,
       });
       currentSec += roundSurge;
 
-      // Recovery Interval
-      const recRes = effortCfg.resMin;
-      intervals.push({
-        id: `bike-rec-${intervalCounter++}`,
-        phase: 'bike_recovery',
-        name: `Recovery Flush ${r + 1}`,
-        duration: roundRec,
-        cadence: '75–85 RPM',
-        resistance: recRes,
-        position: 'saddle',
-        startClips: ['pos_spin_out', `res_${recRes}`, 'cad_70_80', durationClipKey(roundRec)],
-        warningClip: isLastRound ? 'warn_cooldown' : 'warn_surge',
-        cue: `Recovery spin. Resistance ${recRes}, cadence 75 to 85 for ${roundRec} seconds.`,
-      });
-      currentSec += roundRec;
+      if (currentSec < mainSec - 30) {
+        const remainingAfterSurge = mainSec - currentSec;
+        const roundRec = Math.min(recDur, remainingAfterSurge);
+        const recRes = Math.min(maxResCap, effortCfg.resMin);
+        const isNearEnd = (currentSec + roundRec >= mainSec - 30);
+
+        intervals.push({
+          id: `bike-rec-${intervalCounter++}`,
+          phase: 'bike_recovery',
+          name: `Recovery Flush ${surgeCount}`,
+          duration: roundRec,
+          cadence: '75–85 RPM',
+          resistance: recRes,
+          position: 'saddle',
+          startClips: ['pos_spin_out', `res_${recRes}`, 'cad_70_80', durationClipKey(roundRec)],
+          warningClip: isNearEnd ? 'warn_cooldown' : 'warn_surge',
+          cue: `Recovery spin. Resistance ${recRes}, cadence 75 to 85 for ${roundRec} seconds.`,
+        });
+        currentSec += roundRec;
+      }
     }
   } else if (style === 'hills') {
-    // Alternating flat roads and climbs
-    const climbDurs = [60, 90, 120];
+    // Alternating flat roads and climbs with orthopedic torque floor & seated recoveries
+    const seatedClimbDurs = [60, 90, 120];
+    const standingClimbDurs = [60, 90]; // Max 90s standing cap to prevent lumbar fatigue & patellar overload
     const recDurs = [60, 90];
     let isClimbing = false;
+    let climbCount = 0;
 
     while (currentSec < mainSec - 45) {
       const remainingSec = mainSec - currentSec;
       if (!isClimbing) {
         // Climb segment
-        const durChoice = climbDurs[Math.floor(rng() * climbDurs.length)];
-        const dur = Math.min(durChoice, remainingSec >= 150 ? durChoice : (remainingSec >= 90 ? 90 : 60));
+        climbCount++;
         const standRoll = rng();
-        const isStanding = effort !== 'gentle' && (standRoll > 0.45 || effort === 'hard');
-        const climbRes = snapResistance(effortCfg.resMin + (effort === 'hard' ? 15 : (effort === 'moderate' ? 10 : 5)));
+        // Knee-Friendly mode is 100% seated!
+        const isStanding = !kneeFriendly && effort !== 'gentle' && (standRoll > 0.45 || effort === 'hard');
+        const candidateDurs = isStanding ? standingClimbDurs : seatedClimbDurs;
+        const durChoice = candidateDurs[Math.floor(rng() * candidateDurs.length)];
+        const dur = Math.min(durChoice, remainingSec >= 150 ? durChoice : (remainingSec >= 90 ? 90 : 60));
+
+        // Orthopedic Torque Floor: Standing on an indoor cycle requires >= 40 resistance
+        // to prevent flywheel runaway / hyperextension shear forces on the knees.
+        // In knee-friendly mode, resistance is capped at 35 and rider stays in saddle.
+        const climbBonus = kneeFriendly ? 5 : (effort === 'hard' ? 15 : (effort === 'moderate' ? 10 : 5));
+        const baseClimbRes = snapResistance(effortCfg.resMin + climbBonus, maxResCap);
+        const climbRes = isStanding ? Math.max(40, baseClimbRes) : baseClimbRes;
         const position = isStanding ? 'standing' : 'saddle';
         const posClip = isStanding ? 'pos_out_saddle' : 'pos_climb';
 
         intervals.push({
           id: `bike-climb-${intervalCounter++}`,
           phase: 'bike_climb',
-          name: isStanding ? 'Standing Climb' : 'Seated Hill Climb',
+          name: isStanding ? `Standing Climb ${climbCount}` : `Seated Hill Climb ${climbCount}`,
           duration: dur,
-          cadence: effortCfg.cadenceLabelClimbs,
+          cadence: climbCadenceLabel,
           resistance: climbRes,
           position,
-          startClips: [posClip, `res_${climbRes}`, effortCfg.cadenceClimbs, durationClipKey(dur)],
+          startClips: [posClip, `res_${climbRes}`, climbCadenceClip, durationClipKey(dur)],
           warningClip: 'warn_recovery',
-          cue: `${isStanding ? 'Rise up out of the saddle' : 'Heavy climb'}. Resistance ${climbRes}, cadence ${effortCfg.cadenceLabelClimbs} for ${dur} seconds.`,
+          cue: `${isStanding ? 'Rise up out of the saddle' : 'Heavy climb'}. Resistance ${climbRes}, cadence ${climbCadenceLabel} for ${dur} seconds.`,
         });
 
         currentSec += dur;
         isClimbing = true;
       } else {
-        // Flat recovery / transition segment
+        // Flat recovery road (ALWAYS seated to restore biomechanics and lower heart rate spike)
         const durChoice = recDurs[Math.floor(rng() * recDurs.length)];
         const dur = Math.min(durChoice, remainingSec);
-        const flatRes = snapResistance(effortCfg.resMin);
+        const flatRes = snapResistance(effortCfg.resMin, maxResCap);
+        const isNearEnd = (currentSec + dur >= mainSec - 45);
 
         intervals.push({
           id: `bike-flat-${intervalCounter++}`,
           phase: 'bike_flat',
-          name: 'Flat Road Tempo',
+          name: 'Flat Road Recovery',
           duration: dur,
           cadence: effortCfg.cadenceLabelFlats,
           resistance: flatRes,
           position: 'saddle',
           startClips: ['pos_in_saddle', `res_${flatRes}`, effortCfg.cadenceFlats, durationClipKey(dur)],
-          warningClip: 'warn_climb',
+          warningClip: isNearEnd ? 'warn_cooldown' : 'warn_climb',
           cue: `Back in the saddle on flat road. Resistance ${flatRes}, cadence ${effortCfg.cadenceLabelFlats} for ${dur} seconds.`,
         });
 
@@ -277,29 +336,33 @@ export function generateBikeWorkout({
       }
     }
   } else {
-    // Steady Rhythm / Tempo blocks: repeat blocks until mainSec is filled
+    // Steady Rhythm / Tempo blocks: sustained aerobic cadence with regular flush spins
     const targetBlockDur = totalMin >= 30 ? 240 : 180;
     const recDur = 60;
+    let blockCount = 0;
 
     while (currentSec < mainSec - 45) {
       const remainingSec = mainSec - currentSec;
+      blockCount++;
       // If remaining is small, fit remaining directly
       const dur = remainingSec <= targetBlockDur + 60
         ? remainingSec
         : Math.min(targetBlockDur, remainingSec - recDur);
 
-      const tempoRes = snapResistance(effortCfg.resMin + (effort === 'gentle' ? 0 : 5));
+      const tempoBonus = kneeFriendly ? 0 : (effort === 'gentle' ? 0 : 5);
+      const tempoRes = snapResistance(effortCfg.resMin + tempoBonus, maxResCap);
+      const isNearEnd = (currentSec + dur >= mainSec - 45);
 
       intervals.push({
         id: `bike-tempo-${intervalCounter++}`,
         phase: 'bike_flat',
-        name: `Endurance Block ${intervals.filter((i) => i.phase === 'bike_flat').length + 1}`,
+        name: `Endurance Block ${blockCount}`,
         duration: dur,
         cadence: effortCfg.cadenceLabelFlats,
         resistance: tempoRes,
         position: 'saddle',
         startClips: ['pos_in_saddle', `res_${tempoRes}`, effortCfg.cadenceFlats, durationClipKey(dur)],
-        warningClip: 'warn_recovery',
+        warningClip: isNearEnd ? 'warn_cooldown' : 'warn_recovery',
         cue: `Settle into steady rhythm. Resistance ${tempoRes}, cadence ${effortCfg.cadenceLabelFlats} for ${Math.round(dur / 60)} minutes.`,
       });
       currentSec += dur;
@@ -312,29 +375,47 @@ export function generateBikeWorkout({
           name: 'Aerobic Flush',
           duration: flushDur,
           cadence: '75–85 RPM',
-          resistance: effortCfg.resMin,
+          resistance: Math.min(maxResCap, effortCfg.resMin),
           position: 'saddle',
-          startClips: ['pos_spin_out', `res_${effortCfg.resMin}`, 'cad_70_80', durationClipKey(flushDur)],
+          startClips: ['pos_spin_out', `res_${Math.min(maxResCap, effortCfg.resMin)}`, 'cad_70_80', durationClipKey(flushDur)],
           warningClip: 'warn_bike',
-          cue: `Easy spin flush. Resistance ${effortCfg.resMin}, cadence 75 to 85.`,
+          cue: `Easy spin flush. Resistance ${Math.min(maxResCap, effortCfg.resMin)}, cadence 75 to 85 for ${flushDur} seconds.`,
         });
         currentSec += flushDur;
       }
     }
   }
 
-  // 3. Cool-Down
+  // 4. Two-Stage Hemodynamic Cooldown
+  // Stage 1: Active Flush (60s at base resistance to maintain muscle pump & venous return)
+  const stage1Sec = 60;
+  const stage1Res = Math.min(maxResCap, effortCfg.resMin);
   intervals.push({
-    id: 'bike-cooldown',
+    id: 'bike-cooldown-flush',
+    phase: 'bike_recovery',
+    name: 'Active Flush Spin',
+    duration: stage1Sec,
+    cadence: '75–85 RPM',
+    resistance: stage1Res,
+    position: 'saddle',
+    startClips: ['pos_spin_out', `res_${stage1Res}`, 'cad_70_80', 'for_1m'],
+    warningClip: 'warn_cooldown',
+    cue: `Active flush spin at resistance ${stage1Res}, cadence 75 to 85 for 1 minute.`,
+  });
+
+  // Stage 2: Final Cool-down Spin (resistance 25, parasympathetic autonomic reset)
+  const stage2Sec = Math.max(60, cooldownSec - stage1Sec);
+  intervals.push({
+    id: 'bike-cooldown-final',
     phase: 'cooldown',
     name: 'Cool-down Spin',
-    duration: cooldownSec,
+    duration: stage2Sec,
     cadence: '70–80 RPM',
     resistance: 25,
     position: 'saddle',
-    startClips: ['ride_cooldown', 'res_25', 'cad_70_80', durationClipKey(cooldownSec)],
+    startClips: ['ride_cooldown', 'res_25', 'cad_70_80', durationClipKey(stage2Sec)],
     warningClip: null,
-    cue: `Great job! Cool-down spin at resistance 25 for ${cooldownSec / 60} minutes to flush your legs.`,
+    cue: `Great job! Cool-down spin at resistance 25 for ${stage2Sec / 60} minutes to bring your heart rate down.`,
   });
 
   const totalSec = intervals.reduce((acc, curr) => acc + curr.duration, 0);
@@ -342,22 +423,24 @@ export function generateBikeWorkout({
   return {
     id: `bike-${style}-${effort}-${Date.now()}`,
     title: `${totalMin}-Min ${styleCfg.label}`,
-    subtitle: `${effortCfg.label} • ${styleCfg.subtitle}`,
-    description: `${styleCfg.description} Target ${effortCfg.zoneLabel}.`,
+    subtitle: `${kneeFriendly ? '🛡️ Knee-Friendly • ' : ''}${effortCfg.label} • ${styleCfg.subtitle}`,
+    description: `${styleCfg.description} Target ${effortCfg.zoneLabel}.${kneeFriendly ? ' Knee-protect mode: 100% seated, capped torque, smooth cadence.' : ''}`,
     activity: 'bike',
     level: effortCfg.label,
     category: 'Cycling',
     accentColor: effortCfg.color,
+    kneeFriendly: Boolean(kneeFriendly),
     intervals,
     stats: {
       totalSec,
       totalMin: Math.round(totalSec / 60),
       effort: effortCfg.label,
       style: styleCfg.label,
-      archetypeLabel: `${effortCfg.label} ${styleCfg.label}`,
+      archetypeLabel: `${kneeFriendly ? '🛡️ ' : ''}${effortCfg.label} ${styleCfg.label}`,
       peakResistance: Math.max(...intervals.map((i) => i.resistance || 25)),
       warmupSec,
       cooldownSec,
+      kneeFriendly: Boolean(kneeFriendly),
     },
   };
 }

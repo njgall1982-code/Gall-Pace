@@ -201,6 +201,9 @@ export const DEFAULT_PARAMS = {
   walkScaling: 'scaled', // 'scaled' | 'even'
   minRunSec: MIN_RUN,   // shortest run, floor 15
   minWalkSec: MIN_WALK, // shortest walk, floor 15
+  jointProtect: false,
+  warmupCooldownExtra: false,
+  twoStageCooldown: false,
 };
 
 const MAX_ATTEMPTS = 12;
@@ -547,6 +550,19 @@ export function normalizeParams(input = {}) {
   p.maxWalkSec = clamp(Math.round(p.maxWalkSec), 45, 150);
   p.minRunSec = clamp(Math.round(p.minRunSec), SHORTEST_ALLOWED, Math.min(p.maxRunSec, 120));
   p.minWalkSec = clamp(Math.round(p.minWalkSec), SHORTEST_ALLOWED, p.maxWalkSec);
+  p.jointProtect = Boolean(input.jointProtect);
+  p.warmupCooldownExtra = Boolean(input.warmupCooldownExtra);
+  p.twoStageCooldown = Boolean(input.twoStageCooldown);
+
+  // Joint-Protect Orthopedic Constraints
+  if (p.jointProtect) {
+    p.maxRunSec = Math.min(60, p.maxRunSec);
+    p.minWalkSec = Math.max(45, p.minWalkSec);
+    const cappedPeak = Math.min(55, p.peakEffort);
+    p.peakEffort = clamp(Math.round(cappedPeak / 5) * 5, MIN_PEAK_EFFORT, 55);
+    p.allowLongRuns = false;
+  }
+
   return p;
 }
 
@@ -558,7 +574,13 @@ export function generateRun(input = {}) {
   const seed = Number.isFinite(input.seed) ? input.seed : Math.floor(Math.random() * 1e9);
   const params = normalizeParams(input);
   const { warmupSec, cooldownSec } = phaseDurationsForParams(params.totalMin, params.peakEffort);
-  const main = params.totalMin * 60 - warmupSec - cooldownSec;
+
+  // Session Timing:
+  // If warmupCooldownExtra is true, the requested totalMin applies purely to the main interval block.
+  // Warm-up and cool-down are added on top!
+  const main = params.warmupCooldownExtra
+    ? params.totalMin * 60
+    : params.totalMin * 60 - warmupSec - cooldownSec;
 
   // Retry with derived seeds until exact and no three identical segments in a row.
   let result = null;
@@ -615,13 +637,23 @@ export function generateRun(input = {}) {
   result.runs.forEach((dur, i) => {
     const eff = runEfforts[i] || RUN_EFFORT;
     const isSprint = eff >= 95;
+    const isOnRamp = i === 0 && dur <= 60 && eff <= 40;
+    const runName = isOnRamp
+      ? 'Base Jog On-Ramp'
+      : isSprint
+      ? `Sprint ${i + 1}`
+      : `Run ${i + 1}`;
+    const cue = isOnRamp
+      ? `Base jog on-ramp for ${durationWords(dur)} at ${eff} percent effort. Relax your shoulders, take quick light steps under your hips.`
+      : pick(runCueFns)(durationWords(dur), eff);
+
     intervals.push({
       id: `${id}-run-${i + 1}`,
       phase: isSprint ? 'sprint' : 'run',
-      name: isSprint ? `Sprint ${i + 1}` : `Run ${i + 1}`,
+      name: runName,
       duration: dur,
       effort: eff,
-      cue: pick(runCueFns)(durationWords(dur), eff),
+      cue,
     });
     if (i < result.walks.length) {
       const walkName = walkNames[i] || 'Recovery Walk';
@@ -637,10 +669,36 @@ export function generateRun(input = {}) {
     }
   });
 
-  intervals.push({
-    id: `${id}-cooldown`, phase: 'cooldown', name: 'Cool Down Walk', duration: cooldownSec, effort: null,
-    cue: `Great job! ${cooldownSec / 60} minute cool down walk. Let your heart rate recover.`,
-  });
+  // Cooldown (supports 2-stage hemodynamic deceleration when twoStageCooldown is enabled)
+  if (params.twoStageCooldown && cooldownSec >= 120) {
+    const stage1Sec = 60;
+    const stage2Sec = cooldownSec - stage1Sec;
+    intervals.push({
+      id: `${id}-cooldown-flush`,
+      phase: 'walk',
+      name: 'Active Flush Walk',
+      duration: stage1Sec,
+      effort: null,
+      cue: 'Brisk walk for 1 minute. Keep the rhythm going and let your heart rate start coming down.',
+    });
+    intervals.push({
+      id: `${id}-cooldown`,
+      phase: 'cooldown',
+      name: 'Cool Down Walk',
+      duration: stage2Sec,
+      effort: null,
+      cue: `Great job! ${stage2Sec / 60} minute cool down walk to finish. Let your breathing return to normal.`,
+    });
+  } else {
+    intervals.push({
+      id: `${id}-cooldown`,
+      phase: 'cooldown',
+      name: 'Cool Down Walk',
+      duration: cooldownSec,
+      effort: null,
+      cue: `Great job! ${cooldownSec / 60} minute cool down walk. Let your heart rate recover.`,
+    });
+  }
 
   const runSec = sum(result.runs);
   const walkSec = sum(result.walks);
@@ -654,6 +712,13 @@ export function generateRun(input = {}) {
   const archetypeCfg = ARCHETYPES[result.archetype] || ARCHETYPES.pyramid;
 
   const notes = [];
+  if (params.jointProtect) {
+    notes.push('🛡️ Joint-Protect Mode: Capped at 60s runs, 45s+ recovery walks, and Zone 2 effort (≤55%) to minimize knee and shin impact.');
+  }
+  if (params.warmupCooldownExtra) {
+    const extraMin = Math.round((warmupSec + cooldownSec) / 60);
+    notes.push(`Full ${params.totalMin} min interval block + ${extraMin} min warm/cool (${Math.round(totalSec / 60)} min total session).`);
+  }
   if (result.bumpedMinWalk) {
     notes.push('Raised shortest walk to 30s to support heart-rate recovery at high effort.');
   } else if (params.peakEffort >= 75 && params.minWalkSec < 30 && result.walks.some((w) => w < 30)) {
@@ -666,11 +731,13 @@ export function generateRun(input = {}) {
   }
   if (!result.ok) notes.push('Could not hit the exact length with standard interval times.');
 
+  const extraTitleTag = params.warmupCooldownExtra ? ` (+${Math.round((warmupSec + cooldownSec) / 60)}m)` : '';
+
   return {
     id,
-    title: `${params.totalMin} min · ${achievedRunPct}% run · up to ${params.peakEffort}%`,
-    subtitle: `Quick Run · ${archetypeCfg.label}`,
-    description: `Generated ${band.label.toLowerCase()} run/walk mix: ${result.runs.length} runs (${startEffort}%–${maxEffort}% effort), longest ${formatClock(longestRun)}.`,
+    title: `${params.totalMin} min${extraTitleTag} · ${achievedRunPct}% run · up to ${params.peakEffort}%`,
+    subtitle: `${params.jointProtect ? '🛡️ Joint-Protect · ' : ''}Quick Run · ${archetypeCfg.label}`,
+    description: `Generated ${band.label.toLowerCase()} run/walk mix: ${result.runs.length} runs (${startEffort}%–${maxEffort}% effort), longest ${formatClock(longestRun)}.${params.jointProtect ? ' Joint-protect active.' : ''}`,
     level: band.label,
     category: 'Generated',
     accentColor: 'emerald',
@@ -679,6 +746,13 @@ export function generateRun(input = {}) {
     params: { ...params, seed },
     stats: {
       totalSec,
+      totalMin: Math.round(totalSec / 60),
+      mainMin: params.totalMin,
+      warmupSec,
+      cooldownSec,
+      warmupCooldownExtra: Boolean(params.warmupCooldownExtra),
+      jointProtect: Boolean(params.jointProtect),
+      twoStageCooldown: Boolean(params.twoStageCooldown),
       runSec,
       walkSec,
       achievedRunPct,

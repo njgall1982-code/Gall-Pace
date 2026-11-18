@@ -53,6 +53,8 @@ export const storageService = {
     try {
       const data = localStorage.getItem(SETTINGS_KEY);
       const defaults = {
+        activityMode: 'run',
+        bikeKneeFriendly: false,
         chimeEnabled: true,
         tenSecondWarning: true,
         countdownBeeps: true,
