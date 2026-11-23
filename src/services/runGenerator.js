@@ -748,36 +748,21 @@ function getRunBaseClips(dur, eff, isSprint) {
     }
   });
 
-  // Cooldown (supports 2-stage hemodynamic deceleration when twoStageCooldown is enabled)
-  if (params.twoStageCooldown && cooldownSec >= 120) {
-    const stage1Sec = 60;
-    const stage2Sec = cooldownSec - stage1Sec;
-    intervals.push({
-      id: `${id}-cooldown-flush`,
-      phase: 'walk',
-      name: 'Active Flush Walk',
-      duration: stage1Sec,
-      effort: null,
-      cue: 'Brisk walk for 1 minute. Keep the rhythm going and let your heart rate start coming down.',
-    });
-    intervals.push({
-      id: `${id}-cooldown`,
-      phase: 'cooldown',
-      name: 'Cool Down Walk',
-      duration: stage2Sec,
-      effort: null,
-      cue: `Great job! ${stage2Sec / 60} minute cool down walk to finish. Let your breathing return to normal.`,
-    });
-  } else {
-    intervals.push({
-      id: `${id}-cooldown`,
-      phase: 'cooldown',
-      name: 'Cool Down Walk',
-      duration: cooldownSec,
-      effort: null,
-      cue: `Great job! ${cooldownSec / 60} minute cool down walk. Let your heart rate recover.`,
-    });
+  // Ensure the main interval block strictly ends on a run or sprint interval before cooldown.
+  // If an irregular configuration ever left a trailing walk, drop it so cooldown immediately follows a run.
+  while (intervals.length > 0 && intervals[intervals.length - 1].phase === 'walk') {
+    intervals.pop();
   }
+
+  // Cooldown walk: smoothly handles the post-run recovery directly following the final run
+  intervals.push({
+    id: `${id}-cooldown`,
+    phase: 'cooldown',
+    name: 'Cool Down Walk',
+    duration: cooldownSec,
+    effort: null,
+    cue: `Great job! ${durationWords(cooldownSec)} cool down walk to finish. Let your heart rate recover.`,
+  });
 
   const runSec = sum(result.runs);
   const walkSec = sum(result.walks);

@@ -176,7 +176,7 @@ export function QuickRunCard({ onStart, onSave }) {
   };
 
   const workout = useMemo(
-    () => generateRun({ ...params, twoStageCooldown: true, seed }),
+    () => generateRun({ ...params, seed }),
     [params, seed]
   );
   const totalSec = workout.stats.totalSec;

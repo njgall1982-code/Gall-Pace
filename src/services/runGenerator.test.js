@@ -262,25 +262,49 @@ test('session timing: warmupCooldownExtra delivers full requested duration of in
   }
 });
 
-test('physiology: twoStageCooldown splits cooldown into active flush walk and final recovery walk', () => {
+test('physiology: cooldown smoothly handles walking cooldown directly following final run', () => {
   const w = generateRun({
     totalMin: 30,
     peakEffort: 65,
-    twoStageCooldown: true,
     seed: 99,
   });
 
-  const lastTwo = w.intervals.slice(-2);
-  const stage1 = lastTwo[0];
-  const stage2 = lastTwo[1];
+  const lastInterval = w.intervals[w.intervals.length - 1];
+  const secondToLast = w.intervals[w.intervals.length - 2];
 
-  assert.strictEqual(stage1.phase, 'walk');
-  assert.strictEqual(stage1.name, 'Active Flush Walk');
-  assert.strictEqual(stage1.duration, 60);
+  // The workout must transition from a run directly into cooldown
+  assert.strictEqual(lastInterval.phase, 'cooldown');
+  assert.strictEqual(lastInterval.name, 'Cool Down Walk');
+  assert.ok(lastInterval.duration >= 60);
 
-  assert.strictEqual(stage2.phase, 'cooldown');
-  assert.strictEqual(stage2.name, 'Cool Down Walk');
-  assert.ok(stage2.duration >= 60);
+  // Interval immediately preceding cooldown must be a run or sprint
+  assert.ok(
+    secondToLast.phase === 'run' || secondToLast.phase === 'sprint',
+    `Expected second to last interval to be run or sprint, got ${secondToLast.phase}`
+  );
+});
+
+test('rule: every workout strictly ends on a run interval before cooldown', () => {
+  const presets = [
+    { totalMin: 15, runPct: 20, peakEffort: 50 },
+    { totalMin: 20, runPct: 40, peakEffort: 60 },
+    { totalMin: 30, runPct: 60, peakEffort: 70 },
+    { totalMin: 45, runPct: 75, peakEffort: 85 },
+    { totalMin: 60, runPct: 80, peakEffort: 90 },
+  ];
+
+  for (const preset of presets) {
+    for (let s = 1; s <= 5; s++) {
+      const w = generateRun({ ...preset, seed: s });
+      const last = w.intervals[w.intervals.length - 1];
+      const preCooldown = w.intervals[w.intervals.length - 2];
+      assert.strictEqual(last.phase, 'cooldown');
+      assert.ok(
+        preCooldown.phase === 'run' || preCooldown.phase === 'sprint',
+        `Workout ${preset.totalMin}m seed ${s} did not end on a run before cooldown: got ${preCooldown.phase}`
+      );
+    }
+  }
 });
 
 test('physiology: Run 1 acts as Base Jog On-Ramp with cadence form reminder', () => {
