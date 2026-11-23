@@ -5,7 +5,6 @@ import {
 } from 'lucide-react';
 import { PHASE_CONFIG, formatTime, formatTimeHuman } from '../data/defaultWorkouts';
 import { audioManager } from '../services/audioManager';
-import { wakeLockService } from '../services/wakeLock';
 import { storageService } from '../services/storage';
 
 export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
@@ -18,11 +17,7 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
   const [highContrastMode, setHighContrastMode] = useState(false);
   const [isPocketLocked, setIsPocketLocked] = useState(false);
 
-  // Wall-clock deadline for the current block so brief app switches or screen wakes stay accurate
-  const blockEndTimestampRef = useRef(Date.now() + (workout.intervals[0]?.duration || 60) * 1000);
   const lastTapTimeRef = useRef(0);
-
-  // Keep a ref to isMuted so timer callbacks always read the freshest state
   const isMutedRef = useRef(false);
   useEffect(() => {
     isMutedRef.current = isMuted;
@@ -36,23 +31,10 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
     completedIntervals: 0
   });
 
-  // Track cue states for the current interval to prevent duplicate triggers
-  const cueStateRef = useRef({
-    announcedStart: false,
-    announcedHalfway: false,
-    announcedTenSec: false,
-    beepsCounted: new Set(),
-  });
-
   const currentInterval = workout.intervals[currentIdx] || workout.intervals[0];
   const nextInterval = workout.intervals[currentIdx + 1] || null;
   const currentPhaseConfig = PHASE_CONFIG[currentInterval.phase] || PHASE_CONFIG.run;
   const isBikeWorkout = workout?.activity === 'bike' || Boolean(currentInterval?.cadence);
-
-  // Total workout duration & halfway milestone target
-  const totalWorkoutSeconds = workout.intervals.reduce((acc, curr) => acc + curr.duration, 0);
-  const workoutHalfwayTarget = Math.floor(totalWorkoutSeconds / 2);
-  const workoutHalfwayAnnouncedRef = useRef(false);
 
   // Total workout remaining time calculation
   const futureIntervalsSeconds = workout.intervals
@@ -60,62 +42,49 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
     .reduce((acc, curr) => acc + curr.duration, 0);
   const remainingWorkoutSeconds = Math.max(0, secondsLeft + futureIntervalsSeconds);
 
-  // WakeLock & Screen Wake Recovery
   const finishedHandledRef = useRef(false);
 
+  // Connect directly to NativeAudioCoach (SceneDelegate.swift)
   useEffect(() => {
-    const isNative = audioManager.isNativeIOS();
-    wakeLockService.request();
-    audioManager.unlockAudio();
+    audioManager.setNativeWorkoutStateListener((state) => {
+      if (!state) return;
+      statsRef.current = {
+        totalTime: state.totalTime ?? 0,
+        runTime: state.runTime ?? 0,
+        walkTime: state.walkTime ?? 0,
+        completedIntervals: state.completedIntervals ?? 0,
+      };
+      if (typeof state.currentIdx === 'number') setCurrentIdx(state.currentIdx);
+      if (typeof state.secondsLeft === 'number') setSecondsLeft(state.secondsLeft);
+      if (typeof state.currentBlockTotal === 'number') setCurrentBlockTotal(state.currentBlockTotal);
+      if (typeof state.isRunning === 'boolean') setIsRunning(state.isRunning);
 
-    if (isNative) {
-      audioManager.setNativeWorkoutStateListener((state) => {
-        if (!state) return;
-        statsRef.current = {
-          totalTime: state.totalTime ?? 0,
-          runTime: state.runTime ?? 0,
-          walkTime: state.walkTime ?? 0,
-          completedIntervals: state.completedIntervals ?? 0,
-        };
-        if (typeof state.currentIdx === 'number') setCurrentIdx(state.currentIdx);
-        if (typeof state.secondsLeft === 'number') setSecondsLeft(state.secondsLeft);
-        if (typeof state.currentBlockTotal === 'number') setCurrentBlockTotal(state.currentBlockTotal);
-        if (typeof state.isRunning === 'boolean') setIsRunning(state.isRunning);
+      if (state.isCompleted && !finishedHandledRef.current) {
+        finishedHandledRef.current = true;
+        setIsPocketLocked(false);
+        storageService.logCompletedWorkout({
+          title: workout.title,
+          totalTime: statsRef.current.totalTime,
+          runTime: statsRef.current.runTime,
+          walkTime: statsRef.current.walkTime,
+          completedIntervals: statsRef.current.completedIntervals,
+        });
+        onFinishWorkout({
+          ...statsRef.current,
+          workoutTitle: workout.title,
+        });
+      }
+    });
 
-        if (state.isCompleted && !finishedHandledRef.current) {
-          finishedHandledRef.current = true;
-          setIsPocketLocked(false);
-          storageService.logCompletedWorkout({
-            title: workout.title,
-            totalTime: statsRef.current.totalTime,
-            runTime: statsRef.current.runTime,
-            walkTime: statsRef.current.walkTime,
-            completedIntervals: statsRef.current.completedIntervals,
-          });
-          onFinishWorkout({
-            ...statsRef.current,
-            workoutTitle: workout.title,
-          });
-        }
-      });
+    audioManager.setNativeWorkoutStopListener(() => {
+      onEndWorkout();
+    });
 
-      audioManager.setNativeWorkoutStopListener(() => {
-        onEndWorkout();
-      });
+    audioManager.startNativeWorkout(workout, { isMuted: isMutedRef.current });
 
-      audioManager.startNativeWorkout(workout, { isMuted: isMutedRef.current });
-    } else {
-      audioManager.preloadWorkoutClips(workout);
-    }
-
-    const handleVisibilityOrFocus = async () => {
+    const handleVisibilityOrFocus = () => {
       if (document.visibilityState === 'visible') {
-        wakeLockService.request();
-        if (isNative) {
-          audioManager.requestNativeWorkoutState();
-        } else {
-          await audioManager.ensureRunningContext();
-        }
+        audioManager.requestNativeWorkoutState();
       }
     };
 
@@ -125,208 +94,19 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
       window.removeEventListener('focus', handleVisibilityOrFocus);
-      wakeLockService.release();
-      if (isNative) {
-        audioManager.setNativeWorkoutStateListener(null);
-        audioManager.setNativeWorkoutStopListener(null);
-        audioManager.stopNativeWorkout();
-      } else {
-        audioManager.stopAll();
-        audioManager.stopWorkoutKeepAlive();
-      }
+      audioManager.setNativeWorkoutStateListener(null);
+      audioManager.setNativeWorkoutStopListener(null);
+      audioManager.stopNativeWorkout();
     };
   }, []);
 
-  // Sync wakeLock & wall-clock deadline with pause/resume
-  useEffect(() => {
-    if (isRunning) {
-      wakeLockService.request();
-      if (!audioManager.isNativeIOS()) {
-        blockEndTimestampRef.current = Date.now() + secondsLeft * 1000;
-      }
-    }
-  }, [isRunning]);
-
-  // Interval Change initialization (web/PWA mode; native iOS runs in Swift background engine)
-  useEffect(() => {
-    if (audioManager.isNativeIOS() || !currentInterval) return;
-
-    const dur = currentInterval.duration || 60;
-    setSecondsLeft(dur);
-    setCurrentBlockTotal(dur);
-    blockEndTimestampRef.current = Date.now() + dur * 1000;
-
-    cueStateRef.current = {
-      announcedStart: false,
-      announcedHalfway: false,
-      announcedTenSec: false,
-      beepsCounted: new Set(),
-    };
-
-    // Haptic pulse on new interval
-    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-      const settings = storageService.getSettings();
-      if (settings.hapticVibration !== false) {
-        navigator.vibrate([200, 100, 200]);
-      }
-    }
-
-    // Play initial Studio Neural clip (unless muted or silentStart on block 0)
-    if (!isMutedRef.current) {
-      const isFirstBlock = currentIdx === 0;
-      if (isFirstBlock && audioManager.silentStart) {
-        cueStateRef.current.announcedStart = true;
-      } else {
-        audioManager.speakInterval(currentInterval);
-        cueStateRef.current.announcedStart = true;
-      }
-    }
-  }, [currentIdx, workout]);
-
-  // Main Wall-Clock Synced Timer Tick (web/PWA mode; native iOS runs in Swift background engine)
-  useEffect(() => {
-    if (audioManager.isNativeIOS() || !isRunning) return;
-
-    const timer = setInterval(() => {
-      const now = Date.now();
-      const computedRemaining = Math.max(0, Math.round((blockEndTimestampRef.current - now) / 1000));
-
-      setSecondsLeft((prev) => {
-        if (computedRemaining === prev) {
-          return prev;
-        }
-
-        const delta = Math.max(1, prev - computedRemaining);
-        statsRef.current.totalTime += delta;
-        const isActiveWork =
-          currentInterval.phase === 'run' ||
-          currentInterval.phase === 'sprint' ||
-          currentInterval.phase === 'bike_flat' ||
-          currentInterval.phase === 'bike_climb' ||
-          currentInterval.phase === 'bike_surge';
-        if (isActiveWork) {
-          statsRef.current.runTime += delta;
-        } else {
-          statsRef.current.walkTime += delta;
-        }
-
-        const remaining = computedRemaining;
-        const muted = isMutedRef.current;
-
-        // Workout Total Halfway Milestone Cue (with safe de-confliction)
-        const totalElapsed = statsRef.current.totalTime;
-        if (
-          !muted &&
-          audioManager.workoutHalfwayEnabled &&
-          totalElapsed >= workoutHalfwayTarget &&
-          !workoutHalfwayAnnouncedRef.current &&
-          !audioManager.isAudioBusy() &&
-          remaining > 12 && // Don't interrupt upcoming 10s warning or countdown
-          remaining < currentBlockTotal - 4 // Don't interrupt block start announcement
-        ) {
-          workoutHalfwayAnnouncedRef.current = true;
-          audioManager.speakWorkoutHalfway();
-        }
-
-        // 10-Second Warning Cue (skip on short <= 30s intervals)
-        if (
-          !muted &&
-          audioManager.tenSecondWarningEnabled &&
-          currentBlockTotal > 30 &&
-          remaining <= 10 &&
-          remaining >= 8 &&
-          !cueStateRef.current.announcedTenSec &&
-          nextInterval
-        ) {
-          cueStateRef.current.announcedTenSec = true;
-          audioManager.speakWarning(nextInterval, currentInterval);
-        }
-
-        // 3, 2, 1 Countdown Beeps
-        if (
-          !muted &&
-          audioManager.countdownEnabled &&
-          (remaining === 3 || remaining === 2 || remaining === 1) &&
-          !cueStateRef.current.beepsCounted.has(remaining)
-        ) {
-          cueStateRef.current.beepsCounted.add(remaining);
-          audioManager.playCountdownBeep(false);
-          if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-            navigator.vibrate(60);
-          }
-        }
-
-        // Interval finished!
-        if (remaining <= 0) {
-          statsRef.current.completedIntervals += 1;
-          if (!muted) {
-            audioManager.playCountdownBeep(true);
-          }
-
-          // Check if workout is finished
-          if (currentIdx >= workout.intervals.length - 1) {
-            setIsRunning(false);
-            setIsPocketLocked(false);
-            if (!muted) {
-              audioManager.playCompletionChime();
-              setTimeout(() => {
-                audioManager.speakComplete();
-              }, 500);
-            }
-
-            storageService.logCompletedWorkout({
-              title: workout.title,
-              totalTime: statsRef.current.totalTime,
-              runTime: statsRef.current.runTime,
-              walkTime: statsRef.current.walkTime,
-              completedIntervals: statsRef.current.completedIntervals
-            });
-
-            onFinishWorkout({
-              ...statsRef.current,
-              workoutTitle: workout.title
-            });
-            return 0;
-          } else {
-            setCurrentIdx((idx) => idx + 1);
-            return 0;
-          }
-        }
-
-        return remaining;
-      });
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [isRunning, currentIdx, currentInterval, nextInterval, workout, currentBlockTotal]);
-
-  // Controls Handlers
+  // Controls Handlers: routed directly to NativeAudioCoach in Swift
   const handleTogglePlay = () => {
-    if (audioManager.isNativeIOS()) {
-      if (isRunning) {
-        audioManager.pauseNativeWorkout();
-        setIsRunning(false);
-      } else {
-        audioManager.resumeNativeWorkout();
-        setIsRunning(true);
-      }
-      return;
-    }
-
     if (isRunning) {
-      // User tapped Pause: immediately cut off any currently playing audio clip
-      const wasTalking = audioManager.isAudioBusy();
-      audioManager.stopAll();
-      cueStateRef.current.wasInterruptedByPause = wasTalking;
-      audioManager.unlockAudio();
+      audioManager.pauseNativeWorkout();
       setIsRunning(false);
     } else {
-      // User tapped Resume: reset engine and replay the announcement if it got interrupted by pause
-      audioManager.hardResetAudio();
-      if (cueStateRef.current.wasInterruptedByPause && !isMutedRef.current && currentInterval) {
-        cueStateRef.current.wasInterruptedByPause = false;
-        audioManager.speakInterval(currentInterval);
-      }
+      audioManager.resumeNativeWorkout();
       setIsRunning(true);
     }
   };
@@ -335,77 +115,29 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
     const nextMuted = !isMuted;
     setIsMuted(nextMuted);
     isMutedRef.current = nextMuted;
-
-    if (audioManager.isNativeIOS()) {
-      audioManager.setNativeWorkoutMuted(nextMuted);
-      return;
-    }
-
-    if (nextMuted) {
-      audioManager.stopAll();
-    } else {
-      // Drastic refresh: rebuild the audio engine from scratch inside this tap
-      audioManager.hardResetAudio();
-      audioManager.speakInterval(currentInterval);
-    }
+    audioManager.setNativeWorkoutMuted(nextMuted);
   };
 
   const handleAddThirtySeconds = () => {
-    if (audioManager.isNativeIOS()) {
-      audioManager.addNativeWorkoutSeconds(30);
-      return;
-    }
-    audioManager.unlockAudio();
-    blockEndTimestampRef.current += 30 * 1000;
-    setSecondsLeft((prev) => prev + 30);
-    setCurrentBlockTotal((prev) => prev + 30);
+    audioManager.addNativeWorkoutSeconds(30);
   };
 
   const handleSkipNext = () => {
-    if (audioManager.isNativeIOS()) {
-      if (currentIdx < workout.intervals.length - 1) {
-        audioManager.skipNextNativeWorkout();
-      } else {
-        setShowExitConfirm(true);
-      }
-      return;
-    }
-    audioManager.unlockAudio();
     if (currentIdx < workout.intervals.length - 1) {
-      setCurrentIdx(currentIdx + 1);
+      audioManager.skipNextNativeWorkout();
     } else {
       setShowExitConfirm(true);
     }
   };
 
   const handleSkipPrev = () => {
-    if (audioManager.isNativeIOS()) {
-      audioManager.skipPrevNativeWorkout();
-      return;
-    }
-    audioManager.unlockAudio();
-    if (secondsLeft < currentBlockTotal - 3) {
-      blockEndTimestampRef.current = Date.now() + currentBlockTotal * 1000;
-      setSecondsLeft(currentBlockTotal);
-      cueStateRef.current = {
-        announcedStart: false,
-        announcedHalfway: false,
-        announcedTenSec: false,
-        beepsCounted: new Set(),
-      };
-      if (!isMutedRef.current) {
-        audioManager.speakInterval(currentInterval);
-      }
-    } else if (currentIdx > 0) {
-      setCurrentIdx(currentIdx - 1);
-    }
+    audioManager.skipPrevNativeWorkout();
   };
 
   // Double-tap handler to exit Pocket Lock / OLED Blackout mode
   const handlePocketOverlayTap = () => {
     const now = Date.now();
     if (now - lastTapTimeRef.current < 400) {
-      audioManager.unlockAudio();
       setIsPocketLocked(false);
     }
     lastTapTimeRef.current = now;
@@ -777,11 +509,7 @@ export function RunningScreen({ workout, onEndWorkout, onFinishWorkout }) {
               <button
                 onClick={() => {
                   setShowExitConfirm(false);
-                  if (audioManager.isNativeIOS()) {
-                    audioManager.stopNativeWorkout();
-                  } else {
-                    audioManager.stopAll();
-                  }
+                  audioManager.stopNativeWorkout();
                   onEndWorkout();
                 }}
                 className="py-3 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs transition-colors"

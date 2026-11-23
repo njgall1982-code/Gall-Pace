@@ -24,6 +24,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChanged, onOpenBikeSe
     if (key === 'tenSecondWarning') audioManager.tenSecondWarningEnabled = value;
     if (key === 'countdownBeeps') audioManager.countdownEnabled = value;
     if (key === 'workoutHalfway') audioManager.workoutHalfwayEnabled = value;
+    if (key === 'intervalHalfway') audioManager.intervalHalfwayEnabled = value;
     if (key === 'silentStart') audioManager.silentStart = value;
     if (key === 'speechRate') audioManager.speechRate = value;
     if (key === 'speechVolume') audioManager.speechVolume = value;
@@ -355,6 +356,22 @@ export function SettingsModal({ isOpen, onClose, onSettingsChanged, onOpenBikeSe
                 type="checkbox"
                 checked={settings.workoutHalfway ?? true}
                 onChange={(e) => handleChange('workoutHalfway', e.target.checked)}
+                className="w-5 h-5 accent-emerald-500 cursor-pointer"
+              />
+            </label>
+
+            {/* Long Interval Halfway Cue */}
+            <label className="flex items-center justify-between p-3 rounded-xl bg-slate-950/70 border border-slate-800/80 cursor-pointer hover:bg-slate-950 transition-colors">
+              <div className="space-y-0.5 pr-2">
+                <span className="text-xs font-bold text-slate-200 block">Long Interval Halfway Cue</span>
+                <span className="text-[11px] text-slate-400 block">
+                  "Halfway through this interval — keep it up!" for intervals longer than 2 minutes.
+                </span>
+              </div>
+              <input
+                type="checkbox"
+                checked={settings.intervalHalfway ?? true}
+                onChange={(e) => handleChange('intervalHalfway', e.target.checked)}
                 className="w-5 h-5 accent-emerald-500 cursor-pointer"
               />
             </label>

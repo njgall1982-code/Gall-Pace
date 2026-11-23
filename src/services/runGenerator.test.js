@@ -297,6 +297,45 @@ test('physiology: Run 1 acts as Base Jog On-Ramp with cadence form reminder', ()
   assert.match(run1.cue, /quick light steps under your hips/i);
 });
 
+test('audio cues: last run interval includes last_run clip and motivational cue', () => {
+  const w = generateRun({
+    totalMin: 20,
+    runPct: 50,
+    peakEffort: 65,
+    seed: 456,
+  });
+
+  const runs = runIntervalsOf(w);
+  const lastRun = runs[runs.length - 1];
+  assert.match(lastRun.cue, /this is the last run/i);
+  assert.ok(Array.isArray(lastRun.startClips));
+  assert.ok(lastRun.startClips.includes('last_run'));
+});
+
+test('audio cues: high effort runs include coaching prompt and audio clip', () => {
+  const w = generateRun({
+    totalMin: 30,
+    runPct: 70,
+    peakEffort: 80,
+    seed: 789,
+  });
+
+  const runs = runIntervalsOf(w);
+  // Find a middle run with effort >= 60
+  const highEffortRuns = runs.filter((r, idx) => idx > 0 && idx < runs.length - 1 && r.effort >= 60 && r.duration >= 45);
+  assert.ok(highEffortRuns.length > 0, 'Should have at least one eligible middle high effort run');
+  const sample = highEffortRuns[0];
+  assert.ok(
+    /pick up your pace|push a little harder|grandma's pace/i.test(sample.cue),
+    `High effort run should have coaching cue: ${sample.cue}`
+  );
+  assert.ok(
+    sample.startClips.some((c) => ['cue_pick_up_pace', 'cue_push_harder', 'cue_not_grandmas_pace'].includes(c)),
+    `High effort run startClips should include coaching clip: ${JSON.stringify(sample.startClips)}`
+  );
+});
+
+
 
 
 

@@ -14,8 +14,6 @@
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
 
-    <!-- PWA Manifest & Icons -->
-    <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <link rel="apple-touch-icon" href="./icon.svg" />
 
@@ -28,30 +26,5 @@
   <body class="bg-slate-950 text-slate-100 antialiased overflow-x-hidden selection:bg-emerald-500 selection:text-slate-950">
     <div id="root"></div>
     <script type="module" src="./src/main.jsx"></script>
-    <script>
-      // Register Service Worker with automatic update checking
-      if ('serviceWorker' in navigator && (window.location.protocol === 'https:' || window.location.hostname === 'localhost')) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('./sw.js').then((reg) => {
-            // Check for updates on every page load
-            reg.update();
-
-            reg.addEventListener('updatefound', () => {
-              const newWorker = reg.installing;
-              if (newWorker) {
-                newWorker.addEventListener('statechange', () => {
-                  if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-                    // Force refresh to load new code
-                    window.location.reload();
-                  }
-                });
-              }
-            });
-          }).catch((err) => {
-            console.log('SW registration note:', err);
-          });
-        });
-      }
-    </script>
   </body>
 </html>

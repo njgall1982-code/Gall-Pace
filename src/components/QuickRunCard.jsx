@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Play, Shuffle, Save, Minus, Plus, ChevronDown, ChevronUp, Zap, Check, HeartPulse, ShieldCheck, RotateCcw } from 'lucide-react';
+import { Play, Shuffle, Save, Minus, Plus, ChevronDown, ChevronUp, Zap, Check, HeartPulse, RotateCcw } from 'lucide-react';
 import {
   generateRun,
   DEFAULT_PARAMS,
@@ -22,7 +22,7 @@ const MIN_WALK_CHIPS = [15, 30, 45];
 const QUICK_RUN_PRESETS = [
   {
     id: 'aerobic-base',
-    label: 'Aerobic Base',
+    label: 'Base',
     params: {
       totalMin: 30,
       runPct: 70,
@@ -54,7 +54,7 @@ const QUICK_RUN_PRESETS = [
   },
   {
     id: 'cardio-surge',
-    label: 'Cardio Surge',
+    label: 'Surge',
     params: {
       totalMin: 20,
       runPct: 50,
@@ -192,7 +192,6 @@ export function QuickRunCard({ onStart, onSave }) {
           peakEffort: params.peakEffort,
           maxRunSec: params.maxRunSec,
           maxWalkSec: params.maxWalkSec,
-          jointProtect: Boolean(params.jointProtect),
           warmupCooldownExtra: Boolean(params.warmupCooldownExtra),
         })
       );
@@ -229,60 +228,11 @@ export function QuickRunCard({ onStart, onSave }) {
   };
 
   return (
-    <section className="bg-gradient-to-br from-emerald-950/60 to-slate-900 border border-emerald-500/30 rounded-2xl p-4 sm:p-5 shadow-lg space-y-4">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Zap className="w-4 h-4 text-emerald-400" />
-          <h2 className="text-sm font-black text-white uppercase tracking-wide">Quick Run</h2>
-          <span className="text-xs text-slate-400">Build a run in seconds</span>
-        </div>
-        {workout.stats.archetypeLabel && (
-          <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-800/90 border border-slate-700 text-slate-300">
-            {workout.stats.archetypeLabel}
-          </span>
-        )}
-      </div>
-
-      {/* Joint-Protect Mode Banner */}
-      <div
-        className={`p-3 rounded-2xl border transition-all flex items-center justify-between gap-2.5 ${
-          params.jointProtect
-            ? 'bg-gradient-to-r from-emerald-950/60 to-teal-950/40 border-emerald-500/50 shadow-md shadow-emerald-950/30'
-            : 'bg-slate-900/70 border-slate-800 text-slate-300'
-        }`}
-      >
-        <button
-          type="button"
-          onClick={() => update({ jointProtect: !params.jointProtect })}
-          className="flex items-center gap-2.5 text-left flex-1 min-w-0 active:scale-[0.99] transition-transform"
-        >
-          <div
-            className={`p-2 rounded-xl shrink-0 transition-colors ${
-              params.jointProtect
-                ? 'bg-emerald-500 text-slate-950 shadow-[0_0_12px_rgba(16,185,129,0.35)]'
-                : 'bg-slate-800 text-slate-400 border border-slate-700'
-            }`}
-          >
-            <ShieldCheck className="w-4 h-4" />
-          </div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs font-black text-white">Joint-Protect Mode</span>
-              {params.jointProtect ? (
-                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-emerald-500/25 text-emerald-300 font-bold border border-emerald-500/40">
-                  On
-                </span>
-              ) : (
-                <span className="text-[10px] text-slate-500 font-medium">Off</span>
-              )}
-            </div>
-            <p className="text-[11px] text-slate-400 truncate mt-0.5">
-              {params.jointProtect
-                ? 'Caps runs to 60s • 45s+ walks • Zone 2 (≤55% effort)'
-                : 'Knee & shin protect: short runs, generous recovery walks'}
-            </p>
-          </div>
-        </button>
+    <section className="bg-gradient-to-br from-emerald-950/60 to-slate-900 border border-emerald-500/30 rounded-2xl p-4 sm:p-5 shadow-lg space-y-3.5">
+      <div className="flex items-center gap-2">
+        <Zap className="w-4 h-4 text-emerald-400" />
+        <h2 className="text-sm font-black text-white uppercase tracking-wide">Quick Run</h2>
+        <span className="text-xs text-slate-400">Build a run in seconds</span>
       </div>
 
       {recentHard && !nudgeDismissed && params.peakEffort >= 65 && (
@@ -323,81 +273,97 @@ export function QuickRunCard({ onStart, onSave }) {
               title="Load last completed run settings"
             >
               <RotateCcw className="w-3 h-3" />
-              <span>Repeat Last ({lastRun.totalMin}m • {lastRun.runPct}%{lastRun.jointProtect ? ' • 🛡️' : ''})</span>
+              <span>Repeat Last ({lastRun.totalMin}m · {lastRun.runPct}%)</span>
             </button>
           )}
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="grid grid-cols-4 gap-1.5 w-full">
           {QUICK_RUN_PRESETS.map((preset) => {
             const isActive = Object.entries(preset.params).every(([k, v]) => params[k] === v);
             return (
-              <Chip key={preset.id} active={isActive} onClick={() => update(preset.params)}>
+              <button
+                key={preset.id}
+                type="button"
+                onClick={() => update(preset.params)}
+                className={`py-1.5 px-1 rounded-xl text-xs font-bold transition-all active:scale-95 border text-center truncate ${
+                  isActive
+                    ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-black'
+                    : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                }`}
+              >
                 {preset.label}
-              </Chip>
+              </button>
             );
           })}
         </div>
       </div>
 
       {/* Length & Warm-up/Cool-down Timing Accounting */}
-      <div className="space-y-2">
+      <div className="space-y-1.5">
         <div className="flex items-center justify-between mb-1">
           <span className="text-[11px] font-black uppercase tracking-wider text-slate-400">Length</span>
-          <div className="flex items-center gap-1.5">
-            <span className="text-sm font-black text-white">
-              {params.warmupCooldownExtra
-                ? `${params.totalMin}m work (+${Math.round((workout.stats.warmupSec + workout.stats.cooldownSec) / 60)}m = ${workout.stats.totalMin}m)`
-                : `${params.totalMin} min total`}
-            </span>
-          </div>
+          <span className="text-xs font-bold text-white">
+            {params.warmupCooldownExtra
+              ? `${params.totalMin}m work (+${Math.round((workout.stats.warmupSec + workout.stats.cooldownSec) / 60)}m = ${workout.stats.totalMin}m)`
+              : `${params.totalMin} min total`}
+          </span>
         </div>
 
-        {/* Chips for duration */}
-        <div className="flex items-center gap-2 flex-wrap">
+        {/* Chips for duration - plain numbers on 1 clean row */}
+        <div className="flex items-center gap-1.5 w-full">
           <button
             type="button"
             aria-label="Shorter"
             onClick={() => update({ totalMin: Math.max(10, params.totalMin - 5) })}
-            className="p-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 active:scale-95"
+            className="p-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 active:scale-95 shrink-0"
           >
-            <Minus className="w-4 h-4" />
+            <Minus className="w-3.5 h-3.5" />
           </button>
           {LENGTH_CHIPS.map((m) => (
-            <Chip key={m} active={params.totalMin === m} onClick={() => update({ totalMin: m })}>
-              {m}{params.warmupCooldownExtra ? 'm+' : 'm'}
-            </Chip>
+            <button
+              key={m}
+              type="button"
+              onClick={() => update({ totalMin: m })}
+              className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition-all active:scale-95 border text-center ${
+                params.totalMin === m
+                  ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-black'
+                  : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+              }`}
+            >
+              {m}
+            </button>
           ))}
           <button
             type="button"
             aria-label="Longer"
             onClick={() => update({ totalMin: Math.min(90, params.totalMin + 5) })}
-            className="p-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 active:scale-95"
+            className="p-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 active:scale-95 shrink-0"
           >
-            <Plus className="w-4 h-4" />
+            <Plus className="w-3.5 h-3.5" />
           </button>
         </div>
 
         {/* Warmup & Cooldown Mode Toggle (Included vs Extra) */}
-        <div className="flex items-center justify-between pt-1 text-xs">
+        <div className="flex items-center justify-between text-xs pt-0.5">
           <span className="text-[11px] text-slate-400">Warm-up & Cool-down:</span>
           <button
             type="button"
             onClick={() => update({ warmupCooldownExtra: !params.warmupCooldownExtra })}
-            className={`px-2.5 py-1 rounded-xl text-xs font-bold border transition-all active:scale-95 flex items-center gap-1.5 ${
+            className={`px-2 py-0.5 rounded-lg text-[11px] font-bold border transition-all active:scale-95 flex items-center gap-1 ${
               params.warmupCooldownExtra
                 ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 shadow-sm'
-                : 'bg-slate-800/80 text-slate-400 border-slate-700 hover:text-slate-200'
+                : 'bg-slate-800/70 text-slate-400 border-slate-700 hover:text-slate-200'
             }`}
           >
             {params.warmupCooldownExtra ? (
               <>
-                <span className="text-emerald-400 font-black">+ Added on Top</span>
-                <span className="text-[10px] text-emerald-200/80">(Full {params.totalMin}m intervals)</span>
+                <span className="text-emerald-400 font-black">+ Extra Time</span>
+                <span className="text-[10px] text-emerald-200/80">({workout.stats.totalMin}m total)</span>
               </>
             ) : (
               <>
                 <span>Included in {params.totalMin}m</span>
-                <span className="text-[10px] text-slate-500">(Tap to add on top)</span>
+                <span className="text-[10px] text-slate-500">(Tap to add extra)</span>
               </>
             )}
           </button>
@@ -538,9 +504,23 @@ export function QuickRunCard({ onStart, onSave }) {
         )}
       </div>
 
-      {/* Preview */}
+      {/* Preview & Pattern */}
       <div>
-        <div className="flex h-8 w-full rounded-lg overflow-hidden gap-px bg-slate-950" aria-label="Run preview">
+        <div className="flex items-center justify-between mb-1.5">
+          <span className="text-[11px] font-black uppercase tracking-wider text-slate-400">Preview</span>
+          {workout.stats.archetypeLabel && (
+            <button
+              type="button"
+              onClick={handleShuffle}
+              className="flex items-center gap-1.5 text-xs font-bold text-slate-300 hover:text-white bg-slate-800/90 hover:bg-slate-800 px-2.5 py-0.5 rounded-lg border border-slate-700 active:scale-95 transition-all shadow-sm"
+              title="Tap to shuffle pattern"
+            >
+              <Shuffle className="w-3 h-3 text-emerald-400" />
+              <span>Pattern: <strong className="text-emerald-300">{workout.stats.archetypeLabel}</strong></span>
+            </button>
+          )}
+        </div>
+        <div className="flex h-7 w-full rounded-lg overflow-hidden gap-px bg-slate-950" aria-label="Run preview">
           {workout.intervals.map((iv) => (
             <div
               key={iv.id}
@@ -550,7 +530,7 @@ export function QuickRunCard({ onStart, onSave }) {
             />
           ))}
         </div>
-        <p className="text-xs text-slate-300 mt-2">
+        <p className="text-xs text-slate-300 mt-1.5">
           <span className="font-bold text-white">{formatClock(totalSec)}</span> total ·{' '}
           {workout.stats.runCount} runs · longest {formatClock(workout.stats.longestRun)} ·{' '}
           <span className="font-bold text-emerald-300">{workout.stats.achievedRunPct}% run</span> ·{' '}
@@ -564,11 +544,11 @@ export function QuickRunCard({ onStart, onSave }) {
       </div>
 
       {/* Actions */}
-      <div className="flex gap-2">
+      <div className="flex gap-2 pt-0.5">
         <button
           type="button"
           onClick={handleStart}
-          className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 font-black text-sm uppercase tracking-wider transition-all"
+          className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 font-black text-sm uppercase tracking-wider transition-all shadow-md shadow-emerald-950/40"
         >
           <Play className="w-4 h-4" /> Start
         </button>
@@ -576,8 +556,9 @@ export function QuickRunCard({ onStart, onSave }) {
           type="button"
           onClick={handleShuffle}
           className="flex items-center justify-center gap-1.5 px-4 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-100 font-bold text-sm active:scale-95"
+          title={`Shuffle workout pattern (current: ${workout.stats.archetypeLabel || 'Standard'})`}
         >
-          <Shuffle className="w-4 h-4" /> Shuffle
+          <Shuffle className="w-4 h-4 text-emerald-400" /> Shuffle
         </button>
         <button
           type="button"

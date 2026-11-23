@@ -634,18 +634,96 @@ export function generateRun(input = {}) {
     ],
   };
 
+const DURATION_TAGS = {
+  15: '15s',
+  30: '30s',
+  45: '45s',
+  60: '1m',
+  75: '75s',
+  90: '90s',
+  105: '105s',
+  120: '2m',
+  150: '2m30s',
+  180: '3m',
+  240: '4m',
+  300: '5m',
+};
+
+const COMMON_DEDICATED_RUN_CLIPS = new Set([
+  'run_30_1m', 'run_30_2m',
+  'run_40_1m', 'run_40_2m',
+  'run_45_1m', 'run_45_90s',
+  'run_50_1m', 'run_50_2m',
+  'run_55_1m', 'run_55_2m',
+  'run_60_30s', 'run_60_1m', 'run_60_2m', 'run_60_3m', 'run_60_4m',
+  'run_65_1m', 'run_65_2m',
+  'run_70_1m', 'run_70_2m',
+  'run_75_30s', 'run_75_1m', 'run_75_2m',
+  'run_80_1m', 'run_80_2m', 'run_80_3m',
+  'run_85_30s', 'run_85_1m', 'run_85_2m',
+  'run_90_30s', 'run_90_1m',
+  'sprint_75_30s', 'sprint_80_30s', 'sprint_85_30s',
+  'sprint_90_30s', 'sprint_90_45s',
+  'sprint_95_30s', 'sprint_95_45s', 'sprint_95_1m',
+  'sprint_100_30s', 'sprint_100_1m',
+]);
+
+function getRunBaseClips(dur, eff, isSprint) {
+  const durTag = DURATION_TAGS[dur];
+  const snapped = Math.min(100, Math.max(30, Math.round(eff / 5) * 5));
+  if (isSprint) {
+    if (durTag && COMMON_DEDICATED_RUN_CLIPS.has(`sprint_${snapped}_${durTag}`)) {
+      return [`sprint_${snapped}_${durTag}`];
+    }
+    if (durTag && COMMON_DEDICATED_RUN_CLIPS.has(`run_${snapped}_${durTag}`)) {
+      return [`run_${snapped}_${durTag}`];
+    }
+    const actKey = snapped >= 95 ? `act_sprint_${snapped}` : `act_run_${snapped}`;
+    return durTag ? [actKey, `for_${durTag}`] : [actKey];
+  }
+  if (durTag && COMMON_DEDICATED_RUN_CLIPS.has(`run_${snapped}_${durTag}`)) {
+    return [`run_${snapped}_${durTag}`];
+  }
+  const actKey = `act_run_${snapped}`;
+  return durTag ? [actKey, `for_${durTag}`] : [actKey];
+}
+
+  const totalRuns = result.runs.length;
   result.runs.forEach((dur, i) => {
     const eff = runEfforts[i] || RUN_EFFORT;
     const isSprint = eff >= 95;
     const isOnRamp = i === 0 && dur <= 60 && eff <= 40;
+    const isLastRun = i === totalRuns - 1 && totalRuns > 1;
     const runName = isOnRamp
       ? 'Base Jog On-Ramp'
       : isSprint
       ? `Sprint ${i + 1}`
       : `Run ${i + 1}`;
-    const cue = isOnRamp
-      ? `Base jog on-ramp for ${durationWords(dur)} at ${eff} percent effort. Relax your shoulders, take quick light steps under your hips.`
-      : pick(runCueFns)(durationWords(dur), eff);
+
+    const baseClips = getRunBaseClips(dur, eff, isSprint);
+    let startClips = baseClips;
+    let cue = '';
+
+    if (isOnRamp) {
+      cue = `Base jog on-ramp for ${durationWords(dur)} at ${eff} percent effort. Relax your shoulders, take quick light steps under your hips.`;
+      startClips = baseClips;
+    } else if (isLastRun) {
+      cue = `Run at ${eff} percent effort for ${durationWords(dur)}. This is the last run — give it your all!`;
+      startClips = [...baseClips, 'last_run'];
+    } else if (eff >= 60 && dur >= 45) {
+      // High-effort coaching reinforcement
+      const highEffortAddons = [
+        { clip: 'cue_pick_up_pace', text: 'Pick up your pace a bit.' },
+        { clip: 'cue_push_harder', text: 'Push a little harder this time.' },
+        { clip: 'cue_not_grandmas_pace', text: `${eff}% means you should be able to speak a few sentences, but this isn't your grandma's pace!` },
+      ];
+      const addon = highEffortAddons[Math.floor(cueRng() * highEffortAddons.length)];
+      cue = `Run at ${eff} percent effort for ${durationWords(dur)}. ${addon.text}`;
+      startClips = [...baseClips, addon.clip];
+    } else {
+      cue = pick(runCueFns)(durationWords(dur), eff);
+      startClips = baseClips;
+    }
 
     intervals.push({
       id: `${id}-run-${i + 1}`,
@@ -654,6 +732,7 @@ export function generateRun(input = {}) {
       duration: dur,
       effort: eff,
       cue,
+      startClips,
     });
     if (i < result.walks.length) {
       const walkName = walkNames[i] || 'Recovery Walk';

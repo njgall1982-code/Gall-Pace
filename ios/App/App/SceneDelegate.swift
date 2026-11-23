@@ -95,6 +95,7 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
         let tenSecondWarningEnabled: Bool
         let countdownEnabled: Bool
         let workoutHalfwayEnabled: Bool
+        let intervalHalfwayEnabled: Bool
         let silentStart: Bool
     }
 
@@ -112,6 +113,7 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
     private var beepsCounted: Set<Int> = []
     private var workoutHalfwayTarget: Int = 0
     private var workoutHalfwayAnnounced: Bool = false
+    private var intervalHalfwayAnnounced: Bool = false
     private var wasInterruptedByPause: Bool = false
     private var totalTime: Int = 0
     private var runTime: Int = 0
@@ -320,6 +322,7 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
             tenSecondWarningEnabled: (body["tenSecondWarningEnabled"] as? Bool) ?? true,
             countdownEnabled: (body["countdownEnabled"] as? Bool) ?? true,
             workoutHalfwayEnabled: (body["workoutHalfwayEnabled"] as? Bool) ?? true,
+            intervalHalfwayEnabled: (body["intervalHalfwayEnabled"] as? Bool) ?? true,
             silentStart: (body["silentStart"] as? Bool) ?? false
         )
 
@@ -340,6 +343,7 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
         isWorkoutActive = true
         isMuted = (body["isMuted"] as? Bool) ?? false
         announcedTenSec = false
+        intervalHalfwayAnnounced = false
         beepsCounted.removeAll()
         wasInterruptedByPause = false
         totalTime = 0
@@ -350,6 +354,7 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
         let totalWorkoutSec = parsedIntervals.reduce(0) { $0 + $1.duration }
         workoutHalfwayTarget = totalWorkoutSec / 2
         workoutHalfwayAnnounced = false
+        intervalHalfwayAnnounced = false
 
         activateKeepAliveSession()
         startWorkoutTimer()
@@ -413,6 +418,7 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
         secondsLeft = currentBlockTotal
         blockEndTime = isWorkoutPaused ? nil : Date().addingTimeInterval(TimeInterval(currentBlockTotal))
         announcedTenSec = false
+        intervalHalfwayAnnounced = false
         beepsCounted.removeAll()
         wasInterruptedByPause = false
 
@@ -575,6 +581,7 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
                 secondsLeft = currentBlockTotal
                 blockEndTime = now.addingTimeInterval(TimeInterval(currentBlockTotal))
                 announcedTenSec = false
+                intervalHalfwayAnnounced = false
                 beepsCounted.removeAll()
                 wasInterruptedByPause = false
 
@@ -608,10 +615,21 @@ final class NativeAudioCoach: NSObject, AVAudioPlayerDelegate {
            !workoutHalfwayAnnounced,
            totalTime >= workoutHalfwayTarget,
            currentPlayer == nil,
-           computedRemaining > 12,
-           computedRemaining < currentBlockTotal - 4 {
+           computedRemaining > 4,
+           (computedRemaining < currentBlockTotal - 1 || currentBlockTotal <= 15) {
             workoutHalfwayAnnounced = true
             playWorkoutCue(clips: ["workout_halfway"], withChime: config.chimeEnabled, config: config)
+        }
+
+        if !isMuted,
+           config.intervalHalfwayEnabled,
+           currentBlockTotal > 120,
+           !intervalHalfwayAnnounced,
+           computedRemaining <= currentBlockTotal / 2,
+           computedRemaining > 8,
+           currentPlayer == nil {
+            intervalHalfwayAnnounced = true
+            playWorkoutCue(clips: ["interval_halfway"], withChime: config.chimeEnabled, config: config)
         }
 
         if !isMuted,

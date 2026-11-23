@@ -59,6 +59,7 @@ export const storageService = {
         tenSecondWarning: true,
         countdownBeeps: true,
         workoutHalfway: true,
+        intervalHalfway: true,
         speechRate: 1.0,
         speechPitch: 1.0,
         speechVolume: 1.0,

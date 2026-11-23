@@ -1,11 +1,9 @@
 /**
- * Studio Neural AudioManager for IntervalCoach
+ * Native iOS AudioManager for IntervalCoach
  *
- * Features:
- * 1. Plays pre-generated Microsoft Azure Neural AI Coach MP3 clips decoded through Web Audio API
- *    (AudioContext + AudioBufferSourceNode) with `navigator.audioSession.type = 'ambient'`.
- * 2. Handles iOS WebKit's non-standard `audioCtx.state === 'interrupted'` state when unlocking
- *    the screen or returning from background apps, automatically resuming or recreating the context.
+ * Dedicated for Native iOS (Capacitor + WKWebView + NativeAudioCoach Swift bridge).
+ * All workout timing, background audio, AVAudioSession mixing/ducking, lock-screen controls,
+ * and high-priority coaching cues run directly in SceneDelegate.swift (NativeAudioCoach).
  */
 
 export const STUDIO_VOICES = [
@@ -43,7 +41,7 @@ export const STUDIO_VOICES = [
   },
 ];
 
-const DURATION_TAGS = {
+export const DURATION_TAGS = {
   15: '15s',
   30: '30s',
   45: '45s',
@@ -58,8 +56,9 @@ const DURATION_TAGS = {
   300: '5m',
 };
 
-const DEDICATED_CLIPS = new Set([
-  'test', 'workout_halfway', 'complete',
+export const DEDICATED_CLIPS = new Set([
+  'test', 'workout_halfway', 'interval_halfway', 'halfway', 'complete',
+  'last_run', 'cue_pick_up_pace', 'cue_push_harder', 'cue_not_grandmas_pace',
   'warmup_1m', 'warmup_2m', 'warmup_3m', 'warmup_5m', 'warmup',
   'cooldown_1m', 'cooldown_2m', 'cooldown_3m', 'cooldown_5m', 'cooldown',
   'walk_30s', 'walk_45s', 'walk_1m', 'walk_90s', 'walk_2m', 'walk_3m', 'walk',
@@ -106,8 +105,6 @@ class AudioManager {
     this.selectedVoiceURI = 'us-andrew';
     this.speechRate = 1.0;
     this.speechVolume = 1.0;
-
-    // Audio session mode: 'transient' ducks Pandora briefly while talking; 'mix' plays over at 100%
     this.audioSessionMode = 'transient';
 
     // Coaching cue toggles
@@ -115,30 +112,29 @@ class AudioManager {
     this.tenSecondWarningEnabled = true;
     this.countdownEnabled = true;
     this.workoutHalfwayEnabled = true;
+    this.intervalHalfwayEnabled = true;
     this.silentStart = false;
-
-    this.audioCtx = null;
-    this.activeSource = null;
-    this.activeSources = [];
-    this.activeHtmlAudio = null;
-    this.bufferCache = new Map(); // key: `${voiceId}/${clipKey}` -> AudioBuffer
-    this.rawMp3Cache = new Map(); // key: `${voiceId}/${clipKey}` -> ArrayBuffer (survives AudioContext recreation)
-    this.isUnlocked = false;
-    this._appliedSessionMode = null;
 
     // Native iOS bridge tracking
     this._nativeReqId = 1;
     this._nativeCallbacks = new Map();
     this._nativeBusy = false;
     this._nativeWorkoutStateListener = null;
+    this._nativeWorkoutStopListener = null;
 
+    // Dev browser simulation timer
+    this._devTimer = null;
+    this._devWorkout = null;
+    this._devState = null;
+
+    // Attach global window handlers called by Swift SceneDelegate
     if (typeof window !== 'undefined') {
-      window.__onNativeAudioEnded = (reqId) => {
+      window.__onNativeClipEnd = (reqId) => {
         this._nativeBusy = false;
         const cb = this._nativeCallbacks.get(reqId);
         if (cb) {
           this._nativeCallbacks.delete(reqId);
-          cb();
+          try { cb(); } catch (e) { console.error('Clip callback error:', e); }
         }
       };
 
@@ -154,20 +150,15 @@ class AudioManager {
         }
       };
     }
-
-    this.configureAudioSession();
-    this.setupLifecycleRecovery();
   }
 
   /**
-   * Returns true when running inside the native iOS Capacitor app with NativeAudioCoach bridge
+   * Returns true when running inside native iOS app with NativeAudioCoach bridge
    */
   isNativeIOS() {
     return Boolean(
       typeof window !== 'undefined' &&
-      window.webkit &&
-      window.webkit.messageHandlers &&
-      window.webkit.messageHandlers.nativeAudioCoach
+      window.webkit?.messageHandlers?.nativeAudioCoach
     );
   }
 
@@ -182,584 +173,146 @@ class AudioManager {
     }
   }
 
-  /**
-   * Automatically recover Web Audio context when the user turns their screen back on,
-   * switches back from Pandora, or touches anywhere on the page.
-   */
-  setupLifecycleRecovery() {
-    if (typeof window === 'undefined' || typeof document === 'undefined') return;
-
-    const recoverAudio = () => {
-      if (!this.audioCtx) return;
-      if (this.audioCtx.state !== 'running') {
-        this.audioCtx.resume().catch(() => {});
-      }
-    };
-
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') {
-        recoverAudio();
-      }
-    });
-
-    window.addEventListener('pageshow', recoverAudio);
-    window.addEventListener('focus', recoverAudio);
-    window.addEventListener('touchstart', recoverAudio, { passive: true });
-    window.addEventListener('click', recoverAudio, { passive: true });
-  }
-
-  /**
-   * Sets iOS 16.4+ navigator.audioSession.type only in browser mode and only when changed.
-   * Inside native Capacitor iOS, AppDelegate.swift configures AVAudioSession natively with .mixWithOthers.
-   */
-  configureAudioSession() {
-    if (typeof window !== 'undefined' && window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()) {
-      return;
-    }
-    if (typeof navigator !== 'undefined' && 'audioSession' in navigator) {
-      const targetMode = this.audioSessionMode === 'ambient' ? 'playback' : (this.audioSessionMode || 'playback');
-      if (this._appliedSessionMode === targetMode) return;
-      try {
-        navigator.audioSession.type = targetMode;
-        this._appliedSessionMode = targetMode;
-      } catch (e) {}
-    }
-  }
-
-  getAudioContext() {
-    if (this.isNativeIOS()) return null;
-    const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
-    if (!AudioCtxClass) return null;
-
-    if (!this.audioCtx || this.audioCtx.state === 'closed') {
-      this.audioCtx = new AudioCtxClass();
-      this.attachStateChangeListener(this.audioCtx);
-    }
-
-    if (this.audioCtx.state !== 'running') {
-      this.audioCtx.resume().catch(() => {});
-    }
-    return this.audioCtx;
-  }
-
-  attachStateChangeListener(ctx) {
-    if (!ctx) return;
-    ctx.onstatechange = () => {
-      if (
-        (ctx.state === 'interrupted' || ctx.state === 'suspended') &&
-        typeof document !== 'undefined' &&
-        document.visibilityState === 'visible' &&
-        this.audioSessionMode !== 'transient'
-      ) {
-        ctx.resume().catch(() => {});
-      }
-    };
-  }
-
-  /**
-   * Ensure the AudioContext is running without prematurely destroying it.
-   */
-  async ensureRunningContext() {
-    if (this.isNativeIOS()) return null;
-    let ctx = this.getAudioContext();
-    if (!ctx) return null;
-
-    if (ctx.state !== 'running') {
-      try {
-        await Promise.race([
-          ctx.resume(),
-          new Promise((resolve) => setTimeout(resolve, 600))
-        ]);
-      } catch (e) {}
-    }
-
-    if (ctx) {
-      this._clockCtx = ctx;
-      this._clockWall = Date.now();
-      this._clockTime = ctx.currentTime;
-    }
-    return ctx;
-  }
-
-  /**
-   * Drastic recovery: only called manually when user explicitly toggles mute/unmute
-   */
-  hardResetAudio() {
-    this.stopAll();
-    if (this.isNativeIOS()) return null;
-    const old = this.audioCtx;
-    this.audioCtx = null;
-    if (old) {
-      try { old.onstatechange = null; } catch (e) {}
-      try { old.close().catch(() => {}); } catch (e) {}
-    }
-    this.bufferCache.clear();
-    this._clockCtx = null;
-
-    const ctx = this.getAudioContext();
-    if (!ctx) return null;
-    try {
-      const buffer = ctx.createBuffer(1, 1, 22050);
-      const source = ctx.createBufferSource();
-      source.buffer = buffer;
-      source.connect(ctx.destination);
-      source.start(0);
-    } catch (e) {}
-    this.isUnlocked = true;
-    this._clockCtx = ctx;
-    this._clockWall = Date.now();
-    this._clockTime = ctx.currentTime;
-    return ctx;
-  }
-
-  /**
-   * Must be called inside a user click/tap gesture (e.g., Start Run or Test Audio)
-   * Unlocks Web Audio API on iOS without flooding the decode queue.
-   */
   unlockAudio() {
-    if (this.isNativeIOS()) {
-      this.isUnlocked = true;
-      return true;
-    }
-    try {
-      const ctx = this.getAudioContext();
-      if (ctx) {
-        if (ctx.state !== 'running') {
-          ctx.resume().catch(() => {});
-        }
-        // Play a 1-sample silent buffer to unlock iOS Web Audio pipeline synchronously
-        const buffer = ctx.createBuffer(1, 1, 22050);
-        const source = ctx.createBufferSource();
-        source.buffer = buffer;
-        source.connect(ctx.destination);
-        source.start(0);
-      }
-      this.isUnlocked = true;
-      return true;
-    } catch (e) {
-      console.warn('Audio unlock warning:', e);
-      return false;
-    }
+    // No-op on native iOS; AVAudioSession is initialized natively
+    return true;
   }
 
-  /**
-   * Fetch raw MP3 bytes into memory cache without blocking AudioContext decode queue
-   */
-  async fetchClipRaw(voiceId, clipKey) {
-    const validVoice = STUDIO_VOICES.some(v => v.id === voiceId) ? voiceId : 'us-andrew';
-    const cacheKey = `${validVoice}/${clipKey}`;
-    if (this.rawMp3Cache.has(cacheKey)) {
-      return this.rawMp3Cache.get(cacheKey);
-    }
-
-    const candidateUrls = [
-      `./voices/${validVoice}/${clipKey}.mp3`,
-      `voices/${validVoice}/${clipKey}.mp3`,
-      `/voices/${validVoice}/${clipKey}.mp3`,
-    ];
-    for (const url of candidateUrls) {
-      try {
-        const res = await fetch(url);
-        if (res && res.ok) {
-          const rawBuffer = await res.arrayBuffer();
-          this.rawMp3Cache.set(cacheKey, rawBuffer);
-          return rawBuffer;
-        }
-      } catch (e) {}
-    }
-    throw new Error(`HTTP fetch failed for ${cacheKey}`);
+  configureAudioSession() {
+    // No-op on native iOS; AVAudioSession category is set natively by SceneDelegate
   }
 
-  /**
-   * Fetch and decode a studio neural MP3 clip into a Web Audio AudioBuffer
-   */
-  async loadClipBuffer(voiceId, clipKey) {
-    const validVoice = STUDIO_VOICES.some(v => v.id === voiceId) ? voiceId : 'us-andrew';
-    const cacheKey = `${validVoice}/${clipKey}`;
-    if (this.bufferCache.has(cacheKey)) {
-      return this.bufferCache.get(cacheKey);
-    }
-
-    const ctx = this.getAudioContext();
-    if (!ctx) return null;
-
-    try {
-      const rawBuffer = await this.fetchClipRaw(validVoice, clipKey);
-      // Clone rawBuffer before decodeAudioData because decodeAudioData detaches the buffer
-      const bufferCopy = rawBuffer.slice(0);
-      const audioBuffer = await ctx.decodeAudioData(bufferCopy);
-      this.bufferCache.set(cacheKey, audioBuffer);
-      return audioBuffer;
-    } catch (err) {
-      console.warn(`Could not load clip ${cacheKey}:`, err);
-      return null;
-    }
+  preloadCommonClips(_voiceId) {
+    // No-op; native iOS bundles clips directly in the app bundle
   }
 
-  /**
-   * Preload raw MP3 bytes for common clips in the background without choking AudioContext
-   */
-  preloadCommonClips(voiceId = this.selectedVoiceURI) {
-    if (this.isNativeIOS()) return;
-    const common = ['test', 'warmup_2m', 'walk_1m', 'run_60_1m', 'cooldown_2m'];
-    common.forEach((clipKey) => {
-      this.fetchClipRaw(voiceId, clipKey).catch(() => {});
-    });
+  preloadWorkoutClips(_workout) {
+    // No-op; native iOS bundles clips directly in the app bundle
   }
 
-  /**
-   * Preload raw MP3 clips needed for a specific workout
-   */
-  preloadWorkoutClips(workout) {
-    if (this.isNativeIOS()) {
-      this.sendNativeMessage({ action: 'startWorkoutKeepAlive' });
-      return;
-    }
-    if (!workout || !workout.intervals) return;
-    const keysToFetch = new Set(['workout_halfway', 'complete']);
-    workout.intervals.forEach((interval, idx) => {
-      const keys = this.getClipKeysForInterval(interval);
-      keys.forEach((key) => keysToFetch.add(key));
-      if (idx < workout.intervals.length - 1) {
-        const warnKey = this.getWarningClipKey(workout.intervals[idx + 1]);
-        if (warnKey) keysToFetch.add(warnKey);
-      }
-    });
-    keysToFetch.forEach((key) => {
-      this.fetchClipRaw(this.selectedVoiceURI, key).catch(() => {});
-    });
-  }
-
-  stopWorkoutKeepAlive() {
-    if (this.isNativeIOS()) {
-      this.sendNativeMessage({ action: 'stopWorkoutKeepAlive' });
-    }
+  isAudioBusy() {
+    return this._nativeBusy;
   }
 
   setNativeWorkoutStateListener(listener) {
-    this._nativeWorkoutStateListener = listener || null;
+    this._nativeWorkoutStateListener = listener;
   }
 
   setNativeWorkoutStopListener(listener) {
-    this._nativeWorkoutStopListener = listener || null;
+    this._nativeWorkoutStopListener = listener;
   }
 
+  /**
+   * Starts a workout on native iOS (or dev simulator if running in a browser during development)
+   */
   startNativeWorkout(workout, { isMuted = false } = {}) {
-    if (!this.isNativeIOS() || !workout || !Array.isArray(workout.intervals) || !workout.intervals.length) {
-      return false;
-    }
-    const validVoice = STUDIO_VOICES.some((v) => v.id === this.selectedVoiceURI) ? this.selectedVoiceURI : 'us-andrew';
-    const intervals = workout.intervals.map((interval, idx) => ({
-      phase: interval.phase || 'run',
-      duration: Math.max(1, Math.round(interval.duration || 60)),
-      startClips: this.getClipKeysForInterval(interval),
-      warningClip: interval.warningClip || (idx < workout.intervals.length - 1
-        ? this.getWarningClipKey(workout.intervals[idx + 1])
-        : null),
-    }));
+    if (this.isNativeIOS()) {
+      const validVoice = STUDIO_VOICES.some((v) => v.id === this.selectedVoiceURI)
+        ? this.selectedVoiceURI
+        : 'us-andrew';
 
-    return this.sendNativeMessage({
-      action: 'startWorkout',
-      workoutTitle: workout.title || 'Workout',
-      voiceId: validVoice,
-      rate: Number(this.speechRate || 1.0),
-      volume: Number(this.speechVolume || 1.0),
-      sessionMode: this.audioSessionMode === 'transient' ? 'transient' : 'mix',
-      chimeEnabled: Boolean(this.chimeEnabled),
-      tenSecondWarningEnabled: Boolean(this.tenSecondWarningEnabled),
-      countdownEnabled: Boolean(this.countdownEnabled),
-      workoutHalfwayEnabled: Boolean(this.workoutHalfwayEnabled),
-      silentStart: Boolean(this.silentStart),
-      isMuted: Boolean(isMuted),
-      intervals,
-    });
+      const intervals = workout.intervals.map((interval, idx) => ({
+        phase: interval.phase || 'run',
+        duration: Math.max(1, Math.round(interval.duration || 60)),
+        startClips: this.getClipKeysForInterval(interval),
+        warningClip: interval.warningClip || (idx < workout.intervals.length - 1
+          ? this.getWarningClipKey(workout.intervals[idx + 1])
+          : null),
+      }));
+
+      return this.sendNativeMessage({
+        action: 'startWorkout',
+        workoutTitle: workout.title || 'Workout',
+        voiceId: validVoice,
+        rate: Number(this.speechRate || 1.0),
+        volume: Number(this.speechVolume || 1.0),
+        sessionMode: this.audioSessionMode === 'transient' ? 'transient' : 'mix',
+        chimeEnabled: Boolean(this.chimeEnabled),
+        tenSecondWarningEnabled: Boolean(this.tenSecondWarningEnabled),
+        countdownEnabled: Boolean(this.countdownEnabled),
+        workoutHalfwayEnabled: Boolean(this.workoutHalfwayEnabled),
+        intervalHalfwayEnabled: Boolean(this.intervalHalfwayEnabled),
+        silentStart: Boolean(this.silentStart),
+        isMuted: Boolean(isMuted),
+        intervals,
+      });
+    }
+
+    // Dev preview mock simulator for browser development
+    this._startDevSimulator(workout, isMuted);
   }
 
   pauseNativeWorkout() {
-    return this.sendNativeMessage({ action: 'pauseWorkout' });
+    if (this.isNativeIOS()) {
+      return this.sendNativeMessage({ action: 'pauseWorkout' });
+    }
+    if (this._devState) this._devState.isRunning = false;
   }
 
   resumeNativeWorkout() {
-    return this.sendNativeMessage({ action: 'resumeWorkout' });
+    if (this.isNativeIOS()) {
+      return this.sendNativeMessage({ action: 'resumeWorkout' });
+    }
+    if (this._devState) this._devState.isRunning = true;
   }
 
   skipNextNativeWorkout() {
-    return this.sendNativeMessage({ action: 'skipNextWorkout' });
+    if (this.isNativeIOS()) {
+      return this.sendNativeMessage({ action: 'skipNextWorkout' });
+    }
+    if (this._devState && this._devWorkout) {
+      if (this._devState.currentIdx < this._devWorkout.intervals.length - 1) {
+        this._devState.currentIdx += 1;
+        const nextDur = this._devWorkout.intervals[this._devState.currentIdx].duration || 60;
+        this._devState.currentBlockTotal = nextDur;
+        this._devState.secondsLeft = nextDur;
+      }
+    }
   }
 
   skipPrevNativeWorkout() {
-    return this.sendNativeMessage({ action: 'skipPrevWorkout' });
+    if (this.isNativeIOS()) {
+      return this.sendNativeMessage({ action: 'skipPrevWorkout' });
+    }
+    if (this._devState && this._devWorkout && this._devState.currentIdx > 0) {
+      this._devState.currentIdx -= 1;
+      const prevDur = this._devWorkout.intervals[this._devState.currentIdx].duration || 60;
+      this._devState.currentBlockTotal = prevDur;
+      this._devState.secondsLeft = prevDur;
+    }
   }
 
   addNativeWorkoutSeconds(seconds = 30) {
-    return this.sendNativeMessage({ action: 'addSecondsWorkout', seconds });
+    if (this.isNativeIOS()) {
+      return this.sendNativeMessage({ action: 'addSecondsWorkout', seconds });
+    }
+    if (this._devState) {
+      this._devState.secondsLeft += seconds;
+      this._devState.currentBlockTotal += seconds;
+    }
   }
 
   setNativeWorkoutMuted(isMuted) {
-    return this.sendNativeMessage({ action: 'setMutedWorkout', isMuted: Boolean(isMuted) });
+    if (this.isNativeIOS()) {
+      return this.sendNativeMessage({ action: 'setMutedWorkout', isMuted: Boolean(isMuted) });
+    }
+    if (this._devState) this._devState.isMuted = Boolean(isMuted);
   }
 
   stopNativeWorkout() {
-    return this.sendNativeMessage({ action: 'stopWorkout' });
+    if (this.isNativeIOS()) {
+      return this.sendNativeMessage({ action: 'stopWorkout' });
+    }
+    this._stopDevSimulator();
   }
 
   requestNativeWorkoutState() {
-    return this.sendNativeMessage({ action: 'getWorkoutState' });
-  }
-
-  /**
-   * Maps an interval object to one or more studio neural MP3 clip keys.
-   * Returns exact dedicated clips with duration included, or modular sequence [action, duration].
-   */
-  getClipKeysForInterval(interval) {
-    if (!interval) return ['run_60_1m'];
-    if (Array.isArray(interval.startClips) && interval.startClips.length > 0) {
-      return interval.startClips;
-    }
-    const phase = interval.phase || 'run';
-    const dur = interval.duration || 60;
-    const durTag = DURATION_TAGS[dur] || null;
-
-    if (phase === 'warmup') {
-      if (durTag && DEDICATED_CLIPS.has(`warmup_${durTag}`)) {
-        return [`warmup_${durTag}`];
-      }
-      if (durTag && DEDICATED_CLIPS.has(`for_${durTag}`)) {
-        return ['act_warmup', `for_${durTag}`];
-      }
-      return ['warmup'];
-    }
-
-    if (phase === 'cooldown') {
-      if (durTag && DEDICATED_CLIPS.has(`cooldown_${durTag}`)) {
-        return [`cooldown_${durTag}`];
-      }
-      if (durTag && DEDICATED_CLIPS.has(`for_${durTag}`)) {
-        return ['act_cooldown', `for_${durTag}`];
-      }
-      return ['cooldown'];
-    }
-
-    if (phase === 'walk') {
-      if (durTag && DEDICATED_CLIPS.has(`walk_${durTag}`)) {
-        return [`walk_${durTag}`];
-      }
-      if (durTag && DEDICATED_CLIPS.has(`for_${durTag}`)) {
-        return ['act_walk', `for_${durTag}`];
-      }
-      return ['walk'];
-    }
-
-    if (phase === 'sprint') {
-      const rawEffort = interval.effort || 95;
-      const snapped = Math.min(100, Math.max(75, Math.round(rawEffort / 5) * 5));
-      if (durTag && DEDICATED_CLIPS.has(`sprint_${snapped}_${durTag}`)) {
-        return [`sprint_${snapped}_${durTag}`];
-      }
-      if (durTag && DEDICATED_CLIPS.has(`run_${snapped}_${durTag}`)) {
-        return [`run_${snapped}_${durTag}`];
-      }
-      const actKey = snapped >= 95 ? `act_sprint_${snapped}` : (DEDICATED_CLIPS.has(`act_run_${snapped}`) ? `act_run_${snapped}` : 'act_sprint_95');
-      if (durTag && DEDICATED_CLIPS.has(`for_${durTag}`)) {
-        return [actKey, `for_${durTag}`];
-      }
-      return [DEDICATED_CLIPS.has(`run_${snapped}`) ? `run_${snapped}` : 'run_95'];
-    }
-
-    // Default: 'run'
-    const rawEffort = interval.effort || 60;
-    const snapped = Math.min(100, Math.max(30, Math.round(rawEffort / 5) * 5));
-    if (durTag && DEDICATED_CLIPS.has(`run_${snapped}_${durTag}`)) {
-      return [`run_${snapped}_${durTag}`];
-    }
-    if (snapped >= 95 && durTag && DEDICATED_CLIPS.has(`sprint_${snapped}_${durTag}`)) {
-      return [`sprint_${snapped}_${durTag}`];
-    }
-    const actKey = DEDICATED_CLIPS.has(`act_run_${snapped}`) ? `act_run_${snapped}` : 'act_run_60';
-    if (durTag && DEDICATED_CLIPS.has(`for_${durTag}`)) {
-      return [actKey, `for_${durTag}`];
-    }
-    return [DEDICATED_CLIPS.has(`run_${snapped}`) ? `run_${snapped}` : 'run_60'];
-  }
-
-  /**
-   * Backward-compatible helper returning single primary clip key
-   */
-  getClipKeyForInterval(interval) {
-    const keys = this.getClipKeysForInterval(interval);
-    return keys[0] || 'run_60';
-  }
-
-  /**
-   * Maps an upcoming interval to its 10-second warning clip key with duration
-   */
-  getWarningClipKey(nextInterval) {
-    if (!nextInterval) return null;
-    if (nextInterval.warningClip) return nextInterval.warningClip;
-    const phase = nextInterval.phase || 'run';
-    const dur = nextInterval.duration || 60;
-    const durTag = DURATION_TAGS[dur] || null;
-
-    if (phase === 'walk') {
-      if (durTag && ['30s', '1m', '90s', '2m'].includes(durTag) && DEDICATED_CLIPS.has(`warn_walk_${durTag}`)) {
-        return `warn_walk_${durTag}`;
-      }
-      return 'warn_walk';
-    }
-    if (phase === 'sprint') {
-      if (durTag && ['30s', '45s', '1m'].includes(durTag) && DEDICATED_CLIPS.has(`warn_sprint_${durTag}`)) {
-        return `warn_sprint_${durTag}`;
-      }
-      return 'warn_sprint';
-    }
-    if (phase === 'cooldown') {
-      return 'warn_cooldown';
-    }
-    // run
-    if (durTag && ['30s', '1m', '2m', '3m'].includes(durTag) && DEDICATED_CLIPS.has(`warn_run_${durTag}`)) {
-      return `warn_run_${durTag}`;
-    }
-    return 'warn_run';
-  }
-
-  /**
-   * Play a gentle harmonic pre-cue chime on the same Web Audio context
-   */
-  playPreCueChime(ctxOverride = null) {
-    if (!this.chimeEnabled) return;
     if (this.isNativeIOS()) {
-      this.sendNativeMessage({ action: 'playChime' });
-      return;
-    }
-    try {
-      const ctx = ctxOverride || this.getAudioContext();
-      if (!ctx) return;
-      if (ctx.state !== 'running') {
-        ctx.resume().catch(() => {});
-      }
-
-      const now = ctx.currentTime;
-
-      const osc1 = ctx.createOscillator();
-      const gain1 = ctx.createGain();
-      osc1.type = 'sine';
-      osc1.frequency.setValueAtTime(587.33, now);
-      gain1.gain.setValueAtTime(0.001, now);
-      gain1.gain.linearRampToValueAtTime(0.22, now + 0.015);
-      gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
-      osc1.connect(gain1);
-      gain1.connect(ctx.destination);
-      osc1.start(now);
-      osc1.stop(now + 0.26);
-
-      const osc2 = ctx.createOscillator();
-      const gain2 = ctx.createGain();
-      osc2.type = 'sine';
-      osc2.frequency.setValueAtTime(880, now + 0.09);
-      gain2.gain.setValueAtTime(0.001, now + 0.09);
-      gain2.gain.linearRampToValueAtTime(0.25, now + 0.11);
-      gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.42);
-      osc2.connect(gain2);
-      gain2.connect(ctx.destination);
-      osc2.start(now + 0.09);
-      osc2.stop(now + 0.43);
-    } catch (e) {
-      console.warn('Chime error:', e);
+      return this.sendNativeMessage({ action: 'getWorkoutState' });
     }
   }
 
-  /**
-   * Short acoustic tick for 3, 2, 1 countdown
-   */
-  async playCountdownBeep(isFinal = false) {
-    if (!this.countdownEnabled) return;
-    if (this.isNativeIOS()) {
-      this.sendNativeMessage({ action: 'playBeep', isFinal: Boolean(isFinal) });
-      return;
-    }
-    try {
-      const ctx = await this.ensureRunningContext();
-      if (!ctx) return;
-
-      const now = ctx.currentTime;
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-
-      osc.type = isFinal ? 'triangle' : 'sine';
-      osc.frequency.setValueAtTime(isFinal ? 1174.66 : 880, now);
-      gain.gain.setValueAtTime(0.001, now);
-      gain.gain.linearRampToValueAtTime(isFinal ? 0.3 : 0.2, now + 0.01);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + (isFinal ? 0.22 : 0.12));
-
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(now);
-      osc.stop(now + (isFinal ? 0.23 : 0.13));
-    } catch (e) {}
-  }
-
-  async playCompletionChime() {
-    if (this.isNativeIOS()) {
-      this.sendNativeMessage({ action: 'playCompletionChime' });
-      return;
-    }
-    try {
-      const ctx = await this.ensureRunningContext();
-      if (!ctx) return;
-      const notes = [523.25, 659.25, 783.99, 1046.5];
-      const now = ctx.currentTime;
-      notes.forEach((freq, idx) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        const start = now + idx * 0.11;
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(freq, start);
-        gain.gain.setValueAtTime(0.001, start);
-        gain.gain.linearRampToValueAtTime(0.28, start + 0.02);
-        gain.gain.exponentialRampToValueAtTime(0.001, start + 0.5);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start(start);
-        osc.stop(start + 0.52);
-      });
-    } catch (e) {}
-  }
-
-  /**
-   * Fallback player using HTML5 Audio elements if Web Audio Context is suspended/unavailable
-   */
-  async playClipsWithHtmlAudio(keys, { voiceId = this.selectedVoiceURI, onEnd = null } = {}) {
-    const validVoice = STUDIO_VOICES.some(v => v.id === voiceId) ? voiceId : 'us-andrew';
-    for (let i = 0; i < keys.length; i++) {
-      const clipKey = keys[i];
-      await new Promise((resolve) => {
-        const audio = new Audio(`./voices/${validVoice}/${clipKey}.mp3`);
-        audio.playbackRate = this.speechRate || 1.0;
-        audio.volume = Math.min(1.0, this.speechVolume || 1.0);
-        this.activeHtmlAudio = audio;
-        audio.onended = () => {
-          this.activeHtmlAudio = null;
-          resolve();
-        };
-        audio.onerror = () => {
-          this.activeHtmlAudio = null;
-          resolve();
-        };
-        audio.play().catch(() => {
-          this.activeHtmlAudio = null;
-          resolve();
-        });
-      });
-    }
-    if (onEnd) onEnd();
-  }
-
-  /**
-   * Core playback method: plays one or more Studio Neural clips sequentially.
-   * On native iOS, routes directly through NativeAudioCoach (AVAudioPlayer + AVAudioSession)
-   * so Pandora/Spotify never pauses and ducks/unducks smoothly!
-   */
-  async playClips(clipKeys, { voiceId = this.selectedVoiceURI, withChime = false, onEnd = null } = {}) {
+  playClips(clipKeys, { voiceId = this.selectedVoiceURI, withChime = false, onEnd = null } = {}) {
     const keys = Array.isArray(clipKeys) ? clipKeys.filter(Boolean) : [clipKeys].filter(Boolean);
     if (!keys.length) {
       if (onEnd) onEnd();
@@ -767,7 +320,7 @@ class AudioManager {
     }
 
     if (this.isNativeIOS()) {
-      const validVoice = STUDIO_VOICES.some(v => v.id === voiceId) ? voiceId : 'us-andrew';
+      const validVoice = STUDIO_VOICES.some((v) => v.id === voiceId) ? voiceId : 'us-andrew';
       const reqId = this._nativeReqId++;
       if (onEnd) {
         this._nativeCallbacks.set(reqId, onEnd);
@@ -786,78 +339,28 @@ class AudioManager {
       return;
     }
 
-    this.stopAll();
-    const syncCtx = this.getAudioContext();
-    let chimePlayed = false;
-    if (syncCtx && withChime && this.chimeEnabled) {
-      this.playPreCueChime(syncCtx);
-      chimePlayed = true;
+    // Dev preview: play with HTML5 audio if clip exists
+    if (typeof Audio !== 'undefined') {
+      try {
+        const audio = new Audio(`./voices/${voiceId}/${keys[0]}.mp3`);
+        audio.onended = () => { if (onEnd) onEnd(); };
+        audio.onerror = () => { if (onEnd) onEnd(); };
+        audio.play().catch(() => { if (onEnd) onEnd(); });
+        return;
+      } catch (e) {}
     }
-
-    const ctx = await this.ensureRunningContext();
-    if (!ctx) {
-      return this.playClipsWithHtmlAudio(keys, { voiceId, onEnd });
-    }
-
-    try {
-      const buffers = await Promise.all(keys.map((k) => this.loadClipBuffer(voiceId, k)));
-      const validBuffers = buffers.filter(Boolean);
-      if (!validBuffers.length || ctx.state !== 'running') {
-        return this.playClipsWithHtmlAudio(keys, { voiceId, onEnd });
-      }
-
-      if (withChime && this.chimeEnabled && !chimePlayed) {
-        this.playPreCueChime(ctx);
-      }
-
-      const initialDelay = (withChime && this.chimeEnabled) ? 0.25 : 0.02;
-      let scheduledTime = ctx.currentTime + initialDelay;
-      this.activeSources = [];
-
-      validBuffers.forEach((buffer, idx) => {
-        const source = ctx.createBufferSource();
-        const gainNode = ctx.createGain();
-
-        source.buffer = buffer;
-        source.playbackRate.value = this.speechRate || 1.0;
-
-        // Boost voice gain slightly (1.4x) so it cuts cleanly over background music
-        gainNode.gain.value = Math.min(2.0, (this.speechVolume || 1.0) * 1.4);
-
-        source.connect(gainNode);
-        gainNode.connect(ctx.destination);
-        this.activeSources.push(source);
-
-        const isLast = idx === validBuffers.length - 1;
-        if (isLast) {
-          source.onended = () => {
-            this.activeSources = [];
-            this.activeSource = null;
-            if (onEnd) onEnd();
-          };
-        }
-
-        source.start(scheduledTime);
-        const effectiveDuration = buffer.duration / (this.speechRate || 1.0);
-        scheduledTime += effectiveDuration + 0.08;
-      });
-
-      this.activeSource = this.activeSources[0] || null;
-    } catch (err) {
-      console.warn('Error playing neural clips:', err);
-      return this.playClipsWithHtmlAudio(keys, { voiceId, onEnd });
-    }
+    if (onEnd) onEnd();
   }
 
   playClip(clipKeyOrKeys, options = {}) {
     return this.playClips(clipKeyOrKeys, options);
   }
 
-  isAudioBusy() {
+  stopAll() {
     if (this.isNativeIOS()) {
-      return this._nativeBusy;
+      this._nativeBusy = false;
+      this.sendNativeMessage({ action: 'stopAll' });
     }
-    return (this.activeSource !== null) || (this.activeSources && this.activeSources.length > 0) || (this.activeHtmlAudio !== null);
   }
 
   speakInterval(interval) {
@@ -876,8 +379,29 @@ class AudioManager {
     this.playClip('workout_halfway', { withChime: true });
   }
 
+  speakIntervalHalfway() {
+    this.playClip('interval_halfway', { withChime: true });
+  }
+
   speakComplete() {
     this.playClip('complete', { withChime: false });
+  }
+
+  auditionVoice(voiceId, callback) {
+    const targetVoice = STUDIO_VOICES.some((v) => v.id === voiceId) ? voiceId : 'us-andrew';
+    this.playClip('test', {
+      voiceId: targetVoice,
+      withChime: false,
+      onEnd: callback,
+    });
+  }
+
+  testAudio(callback) {
+    this.playClip('test', {
+      voiceId: this.selectedVoiceURI,
+      withChime: true,
+      onEnd: callback,
+    });
   }
 
   getVoiceLabel(v) {
@@ -888,53 +412,135 @@ class AudioManager {
     return STUDIO_VOICES;
   }
 
-  auditionVoice(voiceId, callback) {
-    const targetVoice = STUDIO_VOICES.some(v => v.id === voiceId) ? voiceId : 'us-andrew';
-    this.unlockAudio();
-    this.playClip('test', {
-      voiceId: targetVoice,
-      withChime: false,
-      onEnd: callback,
-    });
+  /**
+   * Maps an interval object to one or more studio neural MP3 clip keys.
+   */
+  getClipKeysForInterval(interval) {
+    if (!interval) return ['run_60_1m'];
+    if (Array.isArray(interval.startClips) && interval.startClips.length > 0) {
+      return interval.startClips;
+    }
+    const phase = interval.phase || 'run';
+    const dur = interval.duration || 60;
+    const durTag = DURATION_TAGS[dur] || null;
+
+    if (phase === 'warmup') {
+      if (durTag && DEDICATED_CLIPS.has(`warmup_${durTag}`)) return [`warmup_${durTag}`];
+      if (durTag && DEDICATED_CLIPS.has(`for_${durTag}`)) return ['act_warmup', `for_${durTag}`];
+      return ['warmup'];
+    }
+
+    if (phase === 'cooldown') {
+      if (durTag && DEDICATED_CLIPS.has(`cooldown_${durTag}`)) return [`cooldown_${durTag}`];
+      if (durTag && DEDICATED_CLIPS.has(`for_${durTag}`)) return ['act_cooldown', `for_${durTag}`];
+      return ['cooldown'];
+    }
+
+    if (phase === 'walk') {
+      if (durTag && DEDICATED_CLIPS.has(`walk_${durTag}`)) return [`walk_${durTag}`];
+      if (durTag && DEDICATED_CLIPS.has(`for_${durTag}`)) return ['act_walk', `for_${durTag}`];
+      return ['walk'];
+    }
+
+    if (phase === 'sprint') {
+      const rawEffort = interval.effort || 95;
+      const snapped = Math.min(100, Math.max(75, Math.round(rawEffort / 5) * 5));
+      if (durTag && DEDICATED_CLIPS.has(`sprint_${snapped}_${durTag}`)) return [`sprint_${snapped}_${durTag}`];
+      if (durTag && DEDICATED_CLIPS.has(`run_${snapped}_${durTag}`)) return [`run_${snapped}_${durTag}`];
+      const actKey = snapped >= 95 ? `act_sprint_${snapped}` : 'act_sprint_95';
+      if (durTag && DEDICATED_CLIPS.has(`for_${durTag}`)) return [actKey, `for_${durTag}`];
+      return ['run_95'];
+    }
+
+    // Default: 'run'
+    const rawEffort = interval.effort || 60;
+    const snapped = Math.min(100, Math.max(30, Math.round(rawEffort / 5) * 5));
+    if (durTag && DEDICATED_CLIPS.has(`run_${snapped}_${durTag}`)) return [`run_${snapped}_${durTag}`];
+    const actKey = DEDICATED_CLIPS.has(`act_run_${snapped}`) ? `act_run_${snapped}` : 'act_run_60';
+    if (durTag && DEDICATED_CLIPS.has(`for_${durTag}`)) return [actKey, `for_${durTag}`];
+    return ['run_60'];
   }
 
-  testAudio(callback) {
-    this.unlockAudio();
-    this.playClip('test', {
-      voiceId: this.selectedVoiceURI,
-      withChime: true,
-      onEnd: callback,
-    });
+  getClipKeyForInterval(interval) {
+    const keys = this.getClipKeysForInterval(interval);
+    return keys[0] || 'run_60';
   }
 
-  stopAll() {
-    if (this.isNativeIOS()) {
-      this._nativeBusy = false;
-      this.sendNativeMessage({ action: 'stopAll' });
-      return;
+  getWarningClipKey(nextInterval) {
+    if (!nextInterval) return null;
+    if (nextInterval.warningClip) return nextInterval.warningClip;
+    const phase = nextInterval.phase || 'run';
+    const dur = nextInterval.duration || 60;
+    const durTag = dur === 30 ? '30s' : dur === 45 ? '45s' : dur === 60 ? '1m' : dur === 90 ? '90s' : dur === 120 ? '2m' : dur === 180 ? '3m' : null;
+
+    if (phase === 'warmup') return 'warn_walk';
+    if (phase === 'cooldown') return 'warn_cooldown';
+    if (phase === 'walk') {
+      if (durTag && DEDICATED_CLIPS.has(`warn_walk_${durTag}`)) return `warn_walk_${durTag}`;
+      return 'warn_walk';
     }
-    if (this.activeSources && this.activeSources.length) {
-      this.activeSources.forEach((src) => {
-        try {
-          src.stop();
-          src.disconnect();
-        } catch (e) {}
-      });
-      this.activeSources = [];
+    if (phase === 'sprint') {
+      if (durTag && DEDICATED_CLIPS.has(`warn_sprint_${durTag}`)) return `warn_sprint_${durTag}`;
+      return 'warn_sprint';
     }
-    if (this.activeSource) {
-      try {
-        this.activeSource.stop();
-        this.activeSource.disconnect();
-      } catch (e) {}
-      this.activeSource = null;
+    if (durTag && DEDICATED_CLIPS.has(`warn_run_${durTag}`)) return `warn_run_${durTag}`;
+    return 'warn_run';
+  }
+
+  // Lightweight mock simulator for browser development (npm run dev)
+  _startDevSimulator(workout, isMuted) {
+    this._stopDevSimulator();
+    this._devWorkout = workout;
+    const initialDur = workout.intervals[0]?.duration || 60;
+    this._devState = {
+      currentIdx: 0,
+      currentBlockTotal: initialDur,
+      secondsLeft: initialDur,
+      isRunning: true,
+      isPaused: false,
+      isCompleted: false,
+      isMuted: Boolean(isMuted),
+      totalTime: 0,
+      runTime: 0,
+      walkTime: 0,
+      completedIntervals: 0,
+    };
+
+    this._devTimer = setInterval(() => {
+      if (!this._devState || !this._devState.isRunning) return;
+      this._devState.totalTime += 1;
+      const curr = this._devWorkout.intervals[this._devState.currentIdx];
+      const isWork = curr?.phase === 'run' || curr?.phase === 'sprint';
+      if (isWork) this._devState.runTime += 1; else this._devState.walkTime += 1;
+
+      this._devState.secondsLeft -= 1;
+      if (this._devState.secondsLeft <= 0) {
+        this._devState.completedIntervals += 1;
+        if (this._devState.currentIdx >= this._devWorkout.intervals.length - 1) {
+          this._devState.isCompleted = true;
+          this._devState.isRunning = false;
+          this._stopDevSimulator();
+        } else {
+          this._devState.currentIdx += 1;
+          const nextDur = this._devWorkout.intervals[this._devState.currentIdx].duration || 60;
+          this._devState.currentBlockTotal = nextDur;
+          this._devState.secondsLeft = nextDur;
+        }
+      }
+
+      if (this._nativeWorkoutStateListener) {
+        this._nativeWorkoutStateListener({ ...this._devState });
+      }
+    }, 1000);
+  }
+
+  _stopDevSimulator() {
+    if (this._devTimer) {
+      clearInterval(this._devTimer);
+      this._devTimer = null;
     }
-    if (this.activeHtmlAudio) {
-      try {
-        this.activeHtmlAudio.pause();
-      } catch (e) {}
-      this.activeHtmlAudio = null;
-    }
+    this._devWorkout = null;
+    this._devState = null;
   }
 }
 

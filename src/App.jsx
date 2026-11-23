@@ -11,7 +11,7 @@ import { BikeSetupModal } from './components/BikeSetupModal';
 import { DEFAULT_WORKOUTS, computeStats } from './data/defaultWorkouts';
 import { storageService } from './services/storage';
 import { audioManager, STUDIO_VOICES } from './services/audioManager';
-import { Plus, Download, X, HelpCircle } from 'lucide-react';
+import { Plus, X, HelpCircle } from 'lucide-react';
 
 export function App() {
   const [activeWorkout, setActiveWorkout] = useState(null);
@@ -23,8 +23,6 @@ export function App() {
   const [lengthFilter, setLengthFilter] = useState('Any');
   const [runFilter, setRunFilter] = useState('Any');
   const [sortBy, setSortBy] = useState('Default');
-  const [installPrompt, setInstallPrompt] = useState(null);
-  const [isInstalled, setIsInstalled] = useState(false);
   const [showIntroGuide, setShowIntroGuide] = useState(() => {
     const s = storageService.getSettings();
     return !s?.hideIntroGuide;
@@ -52,6 +50,7 @@ export function App() {
       if (settings.tenSecondWarning !== undefined) audioManager.tenSecondWarningEnabled = settings.tenSecondWarning;
       if (settings.countdownBeeps !== undefined) audioManager.countdownEnabled = settings.countdownBeeps;
       if (settings.workoutHalfway !== undefined) audioManager.workoutHalfwayEnabled = settings.workoutHalfway;
+      if (settings.intervalHalfway !== undefined) audioManager.intervalHalfwayEnabled = settings.intervalHalfway;
       if (settings.silentStart !== undefined) audioManager.silentStart = settings.silentStart;
       if (settings.speechRate) audioManager.speechRate = settings.speechRate;
       if (settings.speechVolume) audioManager.speechVolume = settings.speechVolume;
@@ -66,22 +65,6 @@ export function App() {
         audioManager.selectedVoiceURI = 'us-andrew';
       }
     }
-
-    // Capture PWA install prompt
-    const handleBeforeInstall = (e) => {
-      e.preventDefault();
-      setInstallPrompt(e);
-    };
-
-    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
-
-    if (window.matchMedia('(display-mode: standalone)').matches) {
-      setIsInstalled(true);
-    }
-
-    return () => {
-      window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
-    };
   }, []);
 
   const handleDismissIntroGuide = () => {
@@ -90,18 +73,7 @@ export function App() {
     storageService.saveSettings({ ...currentSettings, hideIntroGuide: true });
   };
 
-  const handleInstallApp = async () => {
-    if (!installPrompt) return;
-    installPrompt.prompt();
-    const { outcome } = await installPrompt.userChoice;
-    if (outcome === 'accepted') {
-      setIsInstalled(true);
-      setInstallPrompt(null);
-    }
-  };
-
   const handleStartWorkout = (workout) => {
-    audioManager.unlockAudio();
     setActiveWorkout(workout);
   };
 
@@ -217,27 +189,6 @@ export function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-4xl mx-auto w-full px-4 py-5 space-y-5">
-        {/* PWA Install Banner (Mobile) */}
-        {installPrompt && !isInstalled && (
-          <div className="bg-gradient-to-r from-emerald-600/30 to-teal-600/30 border border-emerald-500/40 rounded-2xl p-4 flex items-center justify-between gap-3 shadow-lg">
-            <div className="flex items-center gap-3">
-              <div className="p-2.5 rounded-xl bg-emerald-500 text-slate-950 font-black">
-                <Download className="w-5 h-5" />
-              </div>
-              <div>
-                <h4 className="text-sm font-bold text-white">Add to Home Screen</h4>
-                <p className="text-xs text-slate-300">Pin for quick access on your runs.</p>
-              </div>
-            </div>
-            <button
-              onClick={handleInstallApp}
-              className="py-2 px-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 font-black text-xs uppercase tracking-wider transition-all shadow-md shrink-0"
-            >
-              Add
-            </button>
-          </div>
-        )}
-
         {/* Dismissible Quick-Start Guide */}
         {showIntroGuide && (
           <div className="relative bg-slate-900/70 border border-slate-800 rounded-2xl p-4 sm:p-5 shadow-sm">
