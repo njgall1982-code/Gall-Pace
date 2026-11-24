@@ -187,23 +187,21 @@ export function calculateEffortArc(runs, walks, runPct, rng, peakEffortOrIntensi
 
 const MIN_RUN = 30;          // default shortest run (user-adjustable, floor 15s)
 const MIN_RUN_RELAXED = 30;
-const MIN_WALK = 15;         // default shortest walk (user-adjustable, floor 15s)
+const MIN_WALK = 30;         // default shortest walk (user-adjustable, floor 15s)
 const SHORTEST_ALLOWED = 15;
 
 export const DEFAULT_PARAMS = {
   totalMin: 20,
   runPct: 50,          // 10..90
   peakEffort: DEFAULT_PEAK_EFFORT, // 45..85 in steps of 5
-  maxRunSec: 90,
-  maxWalkSec: 90,
+  maxRunSec: 180,      // default max run: 3 minutes (180s)
+  maxWalkSec: 150,     // default max walk: 2.5 minutes (150s)
   allowLongRuns: false, // true lifts the run cap to MAX_RUN_HARD_CAP
   longerRunsInMiddle: true,
   walkScaling: 'scaled', // 'scaled' | 'even'
-  minRunSec: MIN_RUN,   // shortest run, floor 15
-  minWalkSec: MIN_WALK, // shortest walk, floor 15
-  jointProtect: false,
+  minRunSec: MIN_RUN,   // shortest run: 30s
+  minWalkSec: MIN_WALK, // shortest walk: 30s
   warmupCooldownExtra: false,
-  twoStageCooldown: false,
 };
 
 const MAX_ATTEMPTS = 12;
@@ -550,18 +548,7 @@ export function normalizeParams(input = {}) {
   p.maxWalkSec = clamp(Math.round(p.maxWalkSec), 45, 150);
   p.minRunSec = clamp(Math.round(p.minRunSec), SHORTEST_ALLOWED, Math.min(p.maxRunSec, 120));
   p.minWalkSec = clamp(Math.round(p.minWalkSec), SHORTEST_ALLOWED, p.maxWalkSec);
-  p.jointProtect = Boolean(input.jointProtect);
   p.warmupCooldownExtra = Boolean(input.warmupCooldownExtra);
-  p.twoStageCooldown = Boolean(input.twoStageCooldown);
-
-  // Joint-Protect Orthopedic Constraints
-  if (p.jointProtect) {
-    p.maxRunSec = Math.min(60, p.maxRunSec);
-    p.minWalkSec = Math.max(45, p.minWalkSec);
-    const cappedPeak = Math.min(55, p.peakEffort);
-    p.peakEffort = clamp(Math.round(cappedPeak / 5) * 5, MIN_PEAK_EFFORT, 55);
-    p.allowLongRuns = false;
-  }
 
   return p;
 }
@@ -692,7 +679,7 @@ function getRunBaseClips(dur, eff, isSprint) {
   result.runs.forEach((dur, i) => {
     const eff = runEfforts[i] || RUN_EFFORT;
     const isSprint = eff >= 95;
-    const isOnRamp = i === 0 && dur <= 60 && eff <= 40;
+    const isOnRamp = i === 0 && dur <= 90 && eff <= 40;
     const isLastRun = i === totalRuns - 1 && totalRuns > 1;
     const runName = isOnRamp
       ? 'Base Jog On-Ramp'
@@ -776,9 +763,6 @@ function getRunBaseClips(dur, eff, isSprint) {
   const archetypeCfg = ARCHETYPES[result.archetype] || ARCHETYPES.pyramid;
 
   const notes = [];
-  if (params.jointProtect) {
-    notes.push('🛡️ Joint-Protect Mode: Capped at 60s runs, 45s+ recovery walks, and Zone 2 effort (≤55%) to minimize knee and shin impact.');
-  }
   if (params.warmupCooldownExtra) {
     const extraMin = Math.round((warmupSec + cooldownSec) / 60);
     notes.push(`Full ${params.totalMin} min interval block + ${extraMin} min warm/cool (${Math.round(totalSec / 60)} min total session).`);
@@ -800,8 +784,8 @@ function getRunBaseClips(dur, eff, isSprint) {
   return {
     id,
     title: `${params.totalMin} min${extraTitleTag} · ${achievedRunPct}% run · up to ${params.peakEffort}%`,
-    subtitle: `${params.jointProtect ? '🛡️ Joint-Protect · ' : ''}Quick Run · ${archetypeCfg.label}`,
-    description: `Generated ${band.label.toLowerCase()} run/walk mix: ${result.runs.length} runs (${startEffort}%–${maxEffort}% effort), longest ${formatClock(longestRun)}.${params.jointProtect ? ' Joint-protect active.' : ''}`,
+    subtitle: `Quick Run · ${archetypeCfg.label}`,
+    description: `Generated ${band.label.toLowerCase()} run/walk mix: ${result.runs.length} runs (${startEffort}%–${maxEffort}% effort), longest ${formatClock(longestRun)}.`,
     level: band.label,
     category: 'Generated',
     accentColor: 'emerald',
@@ -815,8 +799,6 @@ function getRunBaseClips(dur, eff, isSprint) {
       warmupSec,
       cooldownSec,
       warmupCooldownExtra: Boolean(params.warmupCooldownExtra),
-      jointProtect: Boolean(params.jointProtect),
-      twoStageCooldown: Boolean(params.twoStageCooldown),
       runSec,
       walkSec,
       achievedRunPct,

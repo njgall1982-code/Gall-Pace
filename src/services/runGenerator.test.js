@@ -90,7 +90,7 @@ test('default-ish settings: run % close to request and middle runs longest', () 
   for (const pct of [25, 50, 75]) {
     const w = generateRun({ totalMin: 30, runPct: pct, seed: 11 });
     assert.ok(Math.abs(w.stats.achievedRunPct - pct) <= 3, `pct ${pct} got ${w.stats.achievedRunPct}`);
-    assert.ok(walksOf(w).every((d) => d <= 90));
+    assert.ok(walksOf(w).every((d) => d <= 150));
     assert.ok(runsOf(w).every((d) => d <= 180));
   }
   // middle bias: averaged over seeds, middle run > first run
@@ -104,16 +104,22 @@ test('default-ish settings: run % close to request and middle runs longest', () 
   assert.ok(mid > first);
 });
 
-test('adult-friendly defaults: 20 min, 50% run, max 90s run, 65% peak effort', () => {
+test('adult-friendly defaults: 20 min, 50% run, max 180s run, max 150s walk, min 30s, 65% peak effort', () => {
   assert.equal(DEFAULT_PARAMS.totalMin, 20);
   assert.equal(DEFAULT_PARAMS.runPct, 50);
-  assert.equal(DEFAULT_PARAMS.maxRunSec, 90);
+  assert.equal(DEFAULT_PARAMS.maxRunSec, 180);
+  assert.equal(DEFAULT_PARAMS.maxWalkSec, 150);
+  assert.equal(DEFAULT_PARAMS.minRunSec, 30);
+  assert.equal(DEFAULT_PARAMS.minWalkSec, 30);
   assert.equal(DEFAULT_PARAMS.peakEffort, 65);
 
   const w = generateRun({ seed: 101 });
   assert.equal(w.stats.totalSec, 20 * 60);
   assert.ok(Math.abs(w.stats.achievedRunPct - 50) <= 3);
-  assert.ok(runsOf(w).every((d) => d <= 90));
+  assert.ok(runsOf(w).every((d) => d <= 180));
+  assert.ok(walksOf(w).every((d) => d <= 150));
+  assert.ok(runsOf(w).every((d) => d >= 30));
+  assert.ok(walksOf(w).every((d) => d >= 30));
   assert.equal(w.level, 'Moderate');
 });
 
@@ -204,35 +210,22 @@ test('healthy workout routine: dynamic warmup/cooldown, finish taper, walk cue m
   assert.ok(zone2.talkTest.length > 0);
 });
 
-test('orthopedics: jointProtect mode enforces safe knee and shin limits', () => {
+test('defaults: starting defaults have max run 3m (180s), max walk 2.5m (150s), shortest run 30s, shortest walk 30s', () => {
   for (let s = 1; s <= 20; s++) {
-    const w = generateRun({
-      totalMin: 30,
-      runPct: 75,
-      peakEffort: 80,
-      maxRunSec: 180,
-      minWalkSec: 15,
-      jointProtect: true,
-      seed: s,
-    });
+    const w = generateRun({ seed: s });
+    assert.strictEqual(w.params.maxRunSec, 180);
+    assert.strictEqual(w.params.maxWalkSec, 150);
+    assert.strictEqual(w.params.minRunSec, 30);
+    assert.strictEqual(w.params.minWalkSec, 30);
 
-    assert.strictEqual(w.params.jointProtect, true);
-    assert.strictEqual(w.stats.jointProtect, true);
-    assert.ok(w.subtitle.includes('Joint-Protect'));
-
-    // Runs never exceed 60s
     for (const rDur of runsOf(w)) {
-      assert.ok(rDur <= 60, `jointProtect run duration (${rDur}) must be <= 60s`);
+      assert.ok(rDur <= 180, `run duration (${rDur}) must be <= 180s`);
+      assert.ok(rDur >= 30, `run duration (${rDur}) must be >= 30s`);
     }
 
-    // Walks are at least 45s
     for (const wDur of walksOf(w)) {
-      assert.ok(wDur >= 45, `jointProtect walk duration (${wDur}) must be >= 45s`);
-    }
-
-    // Peak effort never exceeds 55%
-    for (const iv of runIntervalsOf(w)) {
-      assert.ok(iv.effort <= 55, `jointProtect run effort (${iv.effort}%) must be <= 55%`);
+      assert.ok(wDur <= 150, `walk duration (${wDur}) must be <= 150s`);
+      assert.ok(wDur >= 30, `walk duration (${wDur}) must be >= 30s`);
     }
   }
 });

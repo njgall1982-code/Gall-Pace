@@ -12,7 +12,7 @@ import { storageService } from '../services/storage';
 
 const STORAGE_KEY = 'intervalcoach_quickrun';
 const LAST_RUN_KEY = 'intervalcoach_last_run';
-const PARAMS_VERSION = 3;
+const PARAMS_VERSION = 4;
 const LENGTH_CHIPS = [15, 20, 30, 45, 60];
 const MAX_RUN_CHIPS = [60, 90, 120, 180, 240, 300];
 const MAX_WALK_CHIPS = [45, 60, 90, 120, 150];
@@ -43,11 +43,11 @@ const QUICK_RUN_PRESETS = [
       totalMin: 20,
       runPct: 50,
       peakEffort: 55,
-      maxRunSec: 90,
+      maxRunSec: 180,
       allowLongRuns: false,
       minRunSec: 30,
       minWalkSec: 30,
-      maxWalkSec: 90,
+      maxWalkSec: 150,
       longerRunsInMiddle: true,
       walkScaling: 'scaled',
     },
@@ -112,8 +112,11 @@ function loadParams() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return { ...DEFAULT_PARAMS };
     const parsed = JSON.parse(raw);
-    if (parsed?.v !== PARAMS_VERSION) return { ...DEFAULT_PARAMS };
-    const { v: _v, ...rest } = parsed;
+    if (parsed?.v !== PARAMS_VERSION) {
+      try { localStorage.removeItem(STORAGE_KEY); } catch {}
+      return { ...DEFAULT_PARAMS };
+    }
+    const { v: _v, jointProtect: _jp, twoStageCooldown: _tsc, ...rest } = parsed;
     return { ...DEFAULT_PARAMS, ...rest };
   } catch {
     return { ...DEFAULT_PARAMS };
